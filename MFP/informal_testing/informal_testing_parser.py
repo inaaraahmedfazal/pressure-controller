@@ -2,7 +2,7 @@ import serial
 import csv
 
 def readserial(port, baud, fname):
-    s = serial.Serial(port, baud, timeout=2)
+    s = serial.Serial(port, baud, timeout=1.01)
     q1 = []
     q2 = []
     q3 = []
@@ -22,6 +22,12 @@ def readserial(port, baud, fname):
 
             data4 = str(s.readline().decode().strip())
             q4.append(data4[data4.index(':') + 1:].strip())
+
+            print("pressure q1:", data1[data1.index(':') + 1:].strip())
+            print("pressure q2:", data2[data2.index(':') + 1:].strip())
+            print("pressure q3:", data3[data3.index(':') + 1:].strip())
+            print("pressure q4:", data4[data4.index(':') + 1:].strip())
+            print("\n")
         elif data and "end" in data:
             notEnd = False
 
@@ -31,4 +37,4 @@ def readserial(port, baud, fname):
             w.writerow([q1[i], q2[i], q3[i], q4[i]])
 
 if __name__ == '__main__':
-    readserial('COM3', 9600, 'trial1.csv')
+    readserial('COM4', 9600, 'megSmallShift1PRNF.csv')

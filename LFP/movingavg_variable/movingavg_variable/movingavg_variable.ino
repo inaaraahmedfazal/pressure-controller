@@ -363,7 +363,7 @@ void refillMode(float pressureInPSI){
 void mainMode(float pressureInPSI){
   enqueue(&sensorData, pressureInPSI);
   if(isFull(&sensorData)) {
-    if(is_pressure_unacceptable(pressureInPSI){
+    if(is_pressure_unacceptable(pressureInPSI)){
       float moving_average = getMovingAverage(&sensorData);
       Serial.print("Moving Average: ");
       Serial.println(moving_average);

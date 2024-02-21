@@ -50,6 +50,10 @@ Sensor s2(2, sensorPin2, 0.00789, -0.302);
 Sensor s3(3, sensorPin3, 0.00792, -0.281);
 Sensor s4(4, sensorPin4, 0.00789, -0.262);
 
+//TESTING CALIBRATION SWAP
+//Sensor s3(3, sensorPin3, 0.00789, -0.262);
+//Sensor s4(4, sensorPin4, 0.00792, -0.281);
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600); //Initialize serial communication
@@ -60,7 +64,7 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  if(sampleCount < 120) {
+  if(sampleCount < 1200) {
     if(millis() - lastRefreshTime >= sampling_interval) {
       Serial.println("Starting sample:");
       lastRefreshTime = millis();
@@ -69,7 +73,7 @@ void loop() {
       s3.readPSI();
       s4.readPSI();
       sampleCount++;
-      if(sampleCount == 120) {
+      if(sampleCount == 1200) {
         Serial.println("end");
       }
     }
