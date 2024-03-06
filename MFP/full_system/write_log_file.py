@@ -12,10 +12,11 @@ def readserial(port, baud, fname):
     while notEnd:
         data = str(s.readline().decode().strip())
         f.write(f'{data}\n')
+        print(data)
         if data and "end" in data:
             notEnd = False
 
     f.close()
 
 if __name__ == '__main__':
-    readserial('COM4', 9600, 'megSmallShift1PRNF.csv')
+    readserial('COM8', 9600, 'fullSysTest.txt')
