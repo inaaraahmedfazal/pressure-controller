@@ -93,7 +93,6 @@ float dequeue(struct Queue* queue) {
     float dequeuedItem;
 
     if (isEmpty(queue)) {
-        printf("Queue is empty. Cannot dequeue\n");
         return -1; // Return a special value to indicate an error
     } else if (queue->front == queue->rear) {
         dequeuedItem = queue->items[queue->front];
@@ -108,7 +107,6 @@ float dequeue(struct Queue* queue) {
 // Function to get the front element of the queue without removing it
 float front(struct Queue* queue) {
     if (isEmpty(queue)) {
-        printf("Queue is empty\n");
         return -1; // Return a special value to indicate an error
     }
 
@@ -118,7 +116,6 @@ float front(struct Queue* queue) {
 // Function to calculate the mean of all values in the queue
 float calculateMean(struct Queue* queue) {
     if (isEmpty(queue)) {
-        printf("Queue is empty. Cannot calculate mean.\n");
         return -1.0; // Return a special value to indicate an error
     }
 
@@ -138,7 +135,6 @@ float calculateMean(struct Queue* queue) {
 // Function to calculate the standard deviation of all values in the queue
 float calculateStdDev(struct Queue* queue) {
   if (isEmpty(queue)) {
-    printf("Queue is empty. Cannot calculate standard deviation.\n");
     return -1.0; // Return a special value to indicate an error
   }
 
@@ -162,7 +158,6 @@ float getMovingAverage(struct Queue* queue){
   float mean = calculateMean(queue);
   float std = calculateStdDev(queue);
   if (isEmpty(queue)) {
-      printf("Queue is empty. Cannot calculate mean.\n");
       return -1.0; // Return a special value to indicate an error
   }
   
@@ -234,7 +229,7 @@ class Quadrant {
     // Read the analog voltage from the pressure transducer
     int sensorPressure = analogRead(this->sensor_pin);
     float pressureInPSI = this->calibration_m*sensorPressure + this->calibration_b;
-    safeSerialPrint(String("Pressure PSI for Quadrant " + String(this->num) + ": " + String(pressureInPSI) + "\n"));
+    //safeSerialPrint(String("Pressure PSI for Quadrant " + String(this->num) + ": " + String(pressureInPSI) + "\n"));
     return pressureInPSI;
   }
 
@@ -331,6 +326,7 @@ void setup() {
   pinMode(sensorPin2, INPUT);
   pinMode(sensorPin3, INPUT);
   pinMode(sensorPin4, INPUT);
+  actionState = SET_NEW_REF;
 
   q1 = new Quadrant(1, sensorPin1, VALVE1, 0.00792, -0.252, 0.54);
   q2 = new Quadrant(2, sensorPin2, VALVE2, 0.00789, -0.302, 0.59);
@@ -340,70 +336,80 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  if(sampleCount < 1200) {
-    
+  if(sampleCount < 6000) {
+   
     if(millis() - lastRefreshTime >= sampling_interval) {
-      safeSerialPrint(String("\n\nStarting sample:\n"));
+      // Serial.println("sampling");
+      //Serial.println("\n\nStarting sample:\n");
       lastRefreshTime = millis();
 
-    // currently setting state here - can set this else-where 
-    // ALSO set logic for setting reading state from UI here 
-    if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
-     actionState = INFLATE_QUAD;
-    } else if(q1->is_deflating || q2->is_deflating || q3->is_deflating || q4->is_deflating){
-      actionState = DEFLATE_QUAD;
-    } else {
-      actionState = MAIN_MODE;
-    }
-
-     switch (actionState) {
+      // currently setting state here - can set this else-where 
+      // ALSO set logic for setting reading state from UI here 
+      if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
+        actionState = INFLATE_QUAD;
+      }
+      else if(q1->is_deflating || q2->is_deflating || q3->is_deflating || q4->is_deflating){
+        actionState = DEFLATE_QUAD;
+      } 
+      
+      switch (actionState) {
         case INFLATE_ALL:
           inflateAllMode(); 
           break;
-          
         case DEFLATE_ALL:
           deflateAllMode();
           break;
-          
         case SET_NEW_REF:
+          Serial.println("Reached Case");
           recordAndSetIdealPressures();
-          break;
-          
+          break;  
         case INFLATE_QUAD:
           refillMode();
           break;
-  
         case DEFLATE_QUAD:
           deflateMode();
           break;
-       
-        default:
+        case MAIN_MODE: 
           if(pump_on) {
-              digitalWrite(PUMP, LOW);
-              pump_on = false;
-          }
-          if (exhaust_on) {
-            digitalWrite(VALVE_OUT, LOW);
-            exhaust_on = false;
-          }
-          q1->minuteSum += q1->readPSI();
-          q2->minuteSum += q2->readPSI();
-          q3->minuteSum += q3->readPSI();
-          q4->minuteSum += q4->readPSI();
-          mainMode();
-          break;
+                digitalWrite(PUMP, LOW);
+                pump_on = false;
+            }
+            if (exhaust_on) {
+              digitalWrite(VALVE_OUT, LOW);
+              exhaust_on = false;
+            }
+            q1->minuteSum += q1->readPSI();
+            q2->minuteSum += q2->readPSI();
+            q3->minuteSum += q3->readPSI();
+            q4->minuteSum += q4->readPSI();
+            mainMode();
+            break;
+        default:
+            if(pump_on) {
+                digitalWrite(PUMP, LOW);
+                pump_on = false;
+            }
+            if (exhaust_on) {
+              digitalWrite(VALVE_OUT, LOW);
+              exhaust_on = false;
+            }
+            q1->minuteSum += q1->readPSI();
+            q2->minuteSum += q2->readPSI();
+            q3->minuteSum += q3->readPSI();
+            q4->minuteSum += q4->readPSI();
+            mainMode();
+            break;
       }
 
-    sampleCount++;
-    if(sampleCount == 1200) {
-      safeSerialPrint(String("end\n"));
-      delete q1;
-      delete q2;
-      delete q3;
-      delete q4;
-    }
-  
-  } // end if millis - refreshtime
+      sampleCount++;
+      if(sampleCount == 1200) {
+        Serial.print("end\n");
+        delete q1;
+        delete q2;
+        delete q3;
+        delete q4;
+      }
+    } // end if millis - refreshtime
   } // end if samplecount < 1200
 
 
@@ -415,7 +421,7 @@ void refillMode() {
     if(q1->readPSI() >= q1->ideal_pressure) {
       q1->is_refilling = false;
       q1->closeValve();
-      safeSerialPrint(String("Closing q1\n"));
+      Serial.print("Closing q1\n");
       for(int i = 0; i < N; i++){
         dequeue(q1->sensorData);
       }
@@ -426,7 +432,7 @@ void refillMode() {
     if(q2->readPSI() >= q2->ideal_pressure) {
       q2->is_refilling = false;
       q2->closeValve();
-      safeSerialPrint(String("Closing q2\n"));
+      Serial.print("Closing q2\n");
       for(int i = 0; i < N; i++){
         dequeue(q2->sensorData);
       }
@@ -437,7 +443,7 @@ void refillMode() {
     if(q3->readPSI() >= q3->ideal_pressure) {
       q3->is_refilling = false;
       q3->closeValve();
-      safeSerialPrint(String("Closing q3\n"));
+      Serial.print("Closing q3\n");
       for(int i = 0; i < N; i++){
         dequeue(q3->sensorData);
       }
@@ -448,7 +454,7 @@ void refillMode() {
     if(q4->readPSI() >= q4->ideal_pressure) {
       q4->is_refilling = false;
       q4->closeValve();
-      safeSerialPrint(String("Closing q4\n"));
+      Serial.print("Closing q4\n");
       for(int i = 0; i < N; i++){
         dequeue(q4->sensorData);
       }
@@ -463,7 +469,7 @@ void deflateMode() {
     if(q1->readPSI() <= q1->ideal_pressure) {
       q1->is_deflating = false;
       q1->closeValve();
-      safeSerialPrint(String("Closing q1\n"));
+      Serial.print("Closing q1\n");
       for(int i = 0; i < N; i++){
         dequeue(q1->sensorData);
       }
@@ -473,7 +479,7 @@ void deflateMode() {
     if(q2->readPSI() <= q2->ideal_pressure) {
       q2->is_deflating = false;
       q2->closeValve();
-      safeSerialPrint(String("Closing q2\n"));
+      Serial.print("Closing q2\n");
       for(int i = 0; i < N; i++){
         dequeue(q2->sensorData);
       }
@@ -483,7 +489,7 @@ void deflateMode() {
     if(q3->readPSI() <= q3->ideal_pressure) {
       q3->is_deflating = false;
       q3->closeValve();
-      safeSerialPrint(String("Closing q3\n"));
+      Serial.print("Closing q3\n");
       for(int i = 0; i < N; i++){
         dequeue(q3->sensorData);
       }
@@ -493,7 +499,7 @@ void deflateMode() {
     if(q4->readPSI() <= q4->ideal_pressure) {
       q4->is_deflating = false;
       q4->closeValve();
-      safeSerialPrint(String("Closing q4\n"));
+      Serial.print("Closing q4\n");
       for(int i = 0; i < N; i++){
         dequeue(q4->sensorData);
       }
@@ -503,7 +509,7 @@ void deflateMode() {
 
 void mainMode() {
   min_ctr++;
-  safeSerialPrint(String(min_ctr));
+  //safeSerialPrint(String(min_ctr));
   if(min_ctr == 60) {
     min_ctr = 0;
     float s1_cur = q1->minAvg();
@@ -516,40 +522,40 @@ void mainMode() {
     enqueue(q3->sensorData, s3_cur);
     enqueue(q4->sensorData, s4_cur);
 
-    safeSerialPrint("\nMINUTE AVERAGES:\n");
-    safeSerialPrint("Average for Q1: " + String(s1_cur) + "\n");
-    safeSerialPrint("Average for Q2: " + String(s2_cur) + "\n");
-    safeSerialPrint("Average for Q3: " + String(s3_cur) + "\n");
-    safeSerialPrint("Average for Q4: " + String(s4_cur) + "\n\n");
+    Serial.print("\nMINUTE AVERAGES:\n");
+    Serial.print("Average for Q1: " + String(s1_cur) + "\n");
+    Serial.print("Average for Q2: " + String(s2_cur) + "\n");
+    Serial.print("Average for Q3: " + String(s3_cur) + "\n");
+    Serial.print("Average for Q4: " + String(s4_cur) + "\n\n");
 
     if(isFull(q1->sensorData)) {
       // Checking that one quadrant's data queue is full will check that all are full
       if(is_pressure_unacceptable(s1_cur, q1->ideal_pressure)) {
         float moving_avg1 = getMovingAverage(q1->sensorData);
-        safeSerialPrint("Moving Average for Q1: " + String(moving_avg1) + "\n");
+        Serial.print("Moving Average for Q1: " + String(moving_avg1) + "\n");
         if(isAverageUnacceptable(moving_avg1, q1->ideal_pressure)) {
-          safeSerialPrint("Opening Q1 Valve\n");
+          Serial.print("Opening Q1 Valve\n");
           if (moving_avg1 < q1->ideal_pressure) {
             q1->is_refilling = true;
             q1->openValve();
             pump_on = true;
             digitalWrite(PUMP, HIGH);
-            safeSerialPrint("Turning on pump\n");
+            Serial.print("Turning on pump\n");
           } else {
             q1->is_deflating = true;
             q1->openValve();
             exhaust_on = true;
             digitalWrite(VALVE_OUT, HIGH);
-            safeSerialPrint("Opening Exhaust valve\n");
+            Serial.print("Opening Exhaust valve\n");
           }
        
         }
       }
       if(is_pressure_unacceptable(s2_cur, q2->ideal_pressure)) {
         float moving_avg2 = getMovingAverage(q2->sensorData);
-        safeSerialPrint("Moving Average for Q2: " + String(moving_avg2) + "\n");
+        Serial.print("Moving Average for Q2: " + String(moving_avg2) + "\n");
         if(isAverageUnacceptable(moving_avg2, q2->ideal_pressure)) {
-          safeSerialPrint("Opening Q2 Valve\n");
+          Serial.print("Opening Q2 Valve\n");
           if (moving_avg2 < q2->ideal_pressure) {
             q2->is_refilling = true;
             q2->openValve();
@@ -560,16 +566,16 @@ void mainMode() {
             q2->openValve();
             exhaust_on = true;
             digitalWrite(VALVE_OUT, HIGH);
-            safeSerialPrint("Opening Exhaust valve\n");
+            Serial.print("Opening Exhaust valve\n");
           }
         
         }
       }
       if(is_pressure_unacceptable(s3_cur, q3->ideal_pressure)){
         float moving_avg3 = getMovingAverage(q3->sensorData);
-        safeSerialPrint("Moving Average for Q3: " + String(moving_avg3) + "\n");
+        Serial.print("Moving Average for Q3: " + String(moving_avg3) + "\n");
         if(isAverageUnacceptable(moving_avg3, q3->ideal_pressure)) {
-          safeSerialPrint("Opening Q3 Valve\n");
+          Serial.print("Opening Q3 Valve\n");
           if (moving_avg3 < q3->ideal_pressure) {
           q3->is_refilling = true;
           q3->openValve();
@@ -580,15 +586,15 @@ void mainMode() {
           q3->openValve();
           exhaust_on = true;
           digitalWrite(VALVE_OUT, HIGH);
-          safeSerialPrint("Opening Exhaust valve\n");
+          Serial.print("Opening Exhaust valve\n");
         }
       }
       }
       if(is_pressure_unacceptable(s4_cur, q4->ideal_pressure)){
         float moving_avg4 = getMovingAverage(q4->sensorData);
-        safeSerialPrint("Moving Average for Q4: " + String(moving_avg4) + "\n");
+        Serial.print("Moving Average for Q4: " + String(moving_avg4) + "\n");
         if(isAverageUnacceptable(moving_avg4, q4->ideal_pressure)) {
-          safeSerialPrint("Opening Q4 Valve\n");
+          Serial.print("Opening Q4 Valve\n");
            if (moving_avg4 < q4->ideal_pressure) {
             q4->is_refilling = true;
             q4->openValve();
@@ -599,7 +605,7 @@ void mainMode() {
             q4->openValve();
             exhaust_on = true;
             digitalWrite(VALVE_OUT, HIGH);
-            safeSerialPrint("Opening Exhaust valve\n");
+            Serial.print("Opening Exhaust valve\n");
           }
       }
     }
@@ -617,20 +623,20 @@ void mainMode() {
 
 void deflateAllMode() {
   Serial.print("Deflating All");
-  digitalWrite(VALVE1, LOW);
-  digitalWrite(VALVE2, LOW);
-  digitalWrite(VALVE3, LOW);
+  digitalWrite(VALVE1, HIGH);
+  digitalWrite(VALVE2, HIGH);
+  digitalWrite(VALVE3, HIGH);
   digitalWrite(VALVE4, HIGH);
-  digitalWrite(VALVE_OUT, LOW);
-  digitalWrite(PUMP, HIGH);
+  digitalWrite(VALVE_OUT, HIGH);
+  digitalWrite(PUMP, LOW);
 }
 
 // DEFLATE ALL FUNCTION:
 void inflateAllMode() {
   Serial.print("Inflating All");
-  digitalWrite(VALVE1, LOW);
-  digitalWrite(VALVE2, LOW);
-  digitalWrite(VALVE3, LOW);
+  digitalWrite(VALVE1, HIGH);
+  digitalWrite(VALVE2, HIGH);
+  digitalWrite(VALVE3, HIGH);
   digitalWrite(VALVE4, HIGH);
   digitalWrite(VALVE_OUT, LOW);
   digitalWrite(PUMP, HIGH);
@@ -638,6 +644,7 @@ void inflateAllMode() {
 
 // SET NEW IDEAL PRESSURES:
 void recordAndSetIdealPressures() {
+  Serial.println("Reached set");
   // Read the current pressure for each quadrant
   float currentPressureQ1 = q1->readPSI();
   float currentPressureQ2 = q2->readPSI();
@@ -645,16 +652,17 @@ void recordAndSetIdealPressures() {
   float currentPressureQ4 = q4->readPSI();
 
   // Update the ideal pressure for each quadrant
-  q1->ideal_pressure = q1->readPSI();
-  q2->ideal_pressure = q2->readPSI();
-  q3->ideal_pressure = q3->readPSI();
-  q4->ideal_pressure = q4->readPSI();
+  q1->ideal_pressure = currentPressureQ1;
+  q2->ideal_pressure = currentPressureQ2;
+  q3->ideal_pressure = currentPressureQ3;
+  q4->ideal_pressure = currentPressureQ4;
 
-  safeSerialPrint("Updated Ideal Pressures:\n");
-  safeSerialPrint("Q1: " + String(currentPressureQ1) + "\n");
-  safeSerialPrint("Q2: " + String(currentPressureQ2) + "\n");
-  safeSerialPrint("Q3: " + String(currentPressureQ3) + "\n");
-  safeSerialPrint("Q4: " + String(currentPressureQ4) + "\n");
+  Serial.print("Updated Ideal Pressures:\n");
+  Serial.print("Q1: " + String(currentPressureQ1) + "\n");
+  Serial.print("Q2: " + String(currentPressureQ2) + "\n");
+  Serial.print("Q3: " + String(currentPressureQ3) + "\n");
+  Serial.print("Q4: " + String(currentPressureQ4) + "\n");
+  actionState = MAIN_MODE;
 }
 
 
