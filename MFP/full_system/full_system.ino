@@ -2,12 +2,12 @@
 #define M 4
 
 //SOLENOID VALVES
-const int VALVE1 = 9;
-const int VALVE2 = 10;
-const int VALVE3 = 11;
-const int VALVE4 = 12;
-const int VALVE_OUT = 13;
-const int PUMP = 8;
+const int VALVE1 = 2;
+const int VALVE2 = 3;
+const int VALVE3 = 4;
+const int VALVE4 = 5;
+const int VALVE_OUT = 6;
+const int PUMP = 7;
 
 const int sensorPin1 = A0;
 const int sensorPin2 = A1;
@@ -25,6 +25,18 @@ const float STD_DEV_MULTIPLIER = 1.5;
 
 bool pump_on = false;
 bool exhaust_on = false;
+
+//TO BE SET BY THE UI
+enum ActionState {
+  MAIN_MODE = 0,
+  INFLATE_ALL = 1,
+  DEFLATE_ALL = 2,
+  SET_NEW_REF = 3,
+  INFLATE_QUAD = 4, 
+  DEFLATE_QUAD = 5
+};
+
+uint8_t actionState = MAIN_MODE;
 
 struct Queue {
   int front, rear;
@@ -48,25 +60,9 @@ void safeSerialPrint(String msg) {
 }
 
 struct LeakLog {
-  unsigned long detectionTimestamps[4]; // Store up to 4 detections per hour
+  unsigned int detectionTimestamps[4]; // stores logs for last hour or most recent log if greater than an hour
   int count; // Current number of detections
 };
-
-//void checkSignificantLeak(LeakLog &log, bool &hasSignificantLeak) {
-//  unsigned long currentTime = millis();
-//  int recentDetections = 0;
-//
-//  for (int i = 0; i < log.count; i++) {
-//    if (currentTime - log.detectionTimestamps[i] <= 3600000) { // Check the last hour
-//      recentDetections++;
-//    }
-//  }
-//
-//  // Significant leak if more than two detections in the last hour
-//  hasSignificantLeak = recentDetections > 2;
-//}
-
-
 
 // Function to check if the queue is empty
 int isEmpty(struct Queue* queue) {
@@ -107,7 +103,6 @@ float dequeue(struct Queue* queue) {
         dequeuedItem = queue->items[queue->front];
         queue->front = (queue->front + 1) % queue->maxSize;
     }
-
     return dequeuedItem;
 }
 
@@ -201,23 +196,25 @@ class Quadrant {
   LeakLog leak_log;
 
   public:
+    bool hasSmallLeak;
+    bool hasLargeLeak;
     bool is_refilling;
     bool is_deflating;
     float ideal_pressure;
     float minuteData[60];
     struct Queue* sensorData;
-    struct Queue* actuationsHistory;
   Quadrant(int n, int sp, int vp, float m, float b, float ip) {
     num = n;
     sensor_pin = sp;
     valve_pin = vp;
     calibration_m = m;
     calibration_b = b;
+    hasSmallLeak = false;
+    hasLargeLeak = false;
     is_refilling = false;
     is_deflating = false;
     ideal_pressure = ip;
     initializeQueue(sensorData, N);
-    initializeQueue(actuationsHistory, M);
     for(int i = 0; i < 4; i++) {
       leak_log.detectionTimestamps[i] = 0;
     }
@@ -244,25 +241,74 @@ class Quadrant {
     for (int i = 0; i < 60; i++) {
       sum += minuteData[i];
     }
-
     // Calculate the average
     return sum / 60.0;
-
   }
 
   void updateLeakLog() {
     unsigned long currentTime = millis();
-    if (leak_log.count < 4) {
-      leak_log.detectionTimestamps[leak_log.count++] = currentTime;
-    } else {
-      // Shift older timestamps to make room for the new one
-      for (int i = 1; i < 4; i++) {
-        leak_log.detectionTimestamps[i - 1] = leak_log.detectionTimestamps[i];
-      }
-      // Insert the new timestamp at the last position
-      leak_log.detectionTimestamps[3] = currentTime;
+    unsigned int currentMinutes = currentTime / 60000; // Convert current time to minutes
+
+    // Remove entries older than 1 hour, except the most recent if all are old
+    int recentIndex = -1; // Track the index of the first recent entry within the last hour
+    for (int i = leak_log.count - 1; i >= 0; i--) {
+        unsigned int minutesAgo = currentMinutes - leak_log.detectionTimestamps[i];
+        if (minutesAgo <= 60) {
+            recentIndex = i; // Found a recent entry within the last hour
+            break; // Stop at the first recent entry from the end
+        }
+    }
+
+    if (recentIndex == -1) { // If no entries are within the last hour
+        // Keep only the most recent entry, if any exist
+        if (leak_log.count > 0) {
+            leak_log.detectionTimestamps[0] = leak_log.detectionTimestamps[leak_log.count - 1];
+            leak_log.count = 1;
+        }
+    } else if (recentIndex > 0) {
+        // Shift recent entries to the beginning of the array
+        int shiftCount = recentIndex;
+        for (int i = 0; i + shiftCount < leak_log.count; i++) {
+            leak_log.detectionTimestamps[i] = leak_log.detectionTimestamps[i + shiftCount];
+        }
+        leak_log.count -= shiftCount;
+    }
+
+    // Add the new leak detection time if it's not the same minute as the last logged time
+    if (leak_log.count == 0 || currentMinutes != leak_log.detectionTimestamps[leak_log.count - 1]) {
+        if (leak_log.count < sizeof(leak_log.detectionTimestamps) / sizeof(leak_log.detectionTimestamps[0])) {
+            leak_log.detectionTimestamps[leak_log.count++] = currentMinutes;
+        }
     }
   }
+
+  void evaluateLeakSeverity() {
+      unsigned int currentMinutes = millis() / 60000; // Get current time in minutes
+      int countLastHour = 0;
+      bool hasActuationLast24Hours = false;
+    
+      for(int i = 0; i < leak_log.count; i++) {
+        unsigned int minutesAgo = currentMinutes - leak_log.detectionTimestamps[i];
+    
+        if (minutesAgo <= 60) { // Checks if within the last hour
+          countLastHour++;
+        }
+        if (minutesAgo <= 1440) { // Checks if within the last 24 hours
+          hasActuationLast24Hours = true;
+        }
+      }
+  
+      if (countLastHour > 2) {
+        hasLargeLeak = true;
+        hasSmallLeak = false;
+      } else if(hasActuationLast24Hours) {
+        hasSmallLeak = true;
+        hasLargeLeak = false;
+      } else {
+        hasSmallLeak = false;
+        hasLargeLeak = false;
+      }
+    }
   
 };
 
@@ -286,43 +332,68 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
   if(sampleCount < 1200) {
+    
     if(millis() - lastRefreshTime >= sampling_interval) {
       safeSerialPrint("Starting sample:\n");
       lastRefreshTime = millis();
 
-      if(q1.is_refilling || q2.is_refilling || q3.is_refilling || q4.is_refilling) {
-        refillMode();
-      }
-      else {
-        if(pump_on) {
-          digitalWrite(PUMP, LOW);
-          pump_on = false;
-        }
-        if (q1.is_deflating || q2.is_deflating|| q3.is_deflating || q4.is_deflating) {
+    // currently setting state here - can set this else-where 
+    // ALSO set logic for setting reading state from UI here 
+    if(q1.is_refilling || q2.is_refilling || q3.is_refilling || q4.is_refilling){
+     actionState = INFLATE_QUAD;
+    } else if(q1.is_refilling || q2.is_refilling || q3.is_refilling || q4.is_refilling){
+      actionState = INFLATE_QUAD;
+    } else {
+      actionState = MAIN_MODE;
+    }
+
+     switch (actionState) {
+        case INFLATE_ALL:
+          inflateAllMode(); 
+          break;
+          
+        case DEFLATE_ALL:
+          deflateAllMode();
+          break;
+          
+        case SET_NEW_REF:
+          recordAndSetIdealPressures();
+          break;
+          
+        case INFLATE_QUAD:
+          refillMode();
+          break;
+  
+        case DEFLATE_QUAD:
           deflateMode();
-        } else if (exhaust_on){
-          digitalWrite(VALVE_OUT, LOW);
-          exhaust_on = false;
-        } else {
+          break;
+       
+        default:
+          if(pump_on) {
+              digitalWrite(PUMP, LOW);
+              pump_on = false;
+          }
+          if (exhaust_on) {
+            digitalWrite(VALVE_OUT, LOW);
+            exhaust_on = false;
+          }
           q1.minuteData[min_ctr] = q1.readPSI();
           q2.minuteData[min_ctr] = q2.readPSI();
           q3.minuteData[min_ctr] = q3.readPSI();
           q4.minuteData[min_ctr] = q4.readPSI();
           mainMode();
-        }
-     
+          break;
       }
-      sampleCount++;
-    }
-   
-  }
-  if(sampleCount == 1200) {
+
+    sampleCount++;
+    if(sampleCount == 1200) {
     safeSerialPrint("end\n");
-  }
-
-}
-
-
+    }
+  
+  } // end if millis - refreshtime
+  } // end if samplecount < 1200
+} // end loop
+ 
 
 void refillMode() {
   if(q1.is_refilling) {
@@ -518,15 +589,36 @@ void mainMode() {
     }
   }
   }
+  q1.evaluateLeakSeverity();
+  q2.evaluateLeakSeverity();
+  q3.evaluateLeakSeverity();
+  q4.evaluateLeakSeverity();
+  
 }
 
 
-// TO DO: 
-// INFLATE ALL FUNCTION:
+// FUNCTIONS FOR SET-MODE -----------------------------------------
 
+void deflateAllMode() {
+  Serial.print("Deflating All");
+  digitalWrite(VALVE1, LOW);
+  digitalWrite(VALVE2, LOW);
+  digitalWrite(VALVE3, LOW);
+  digitalWrite(VALVE4, HIGH);
+  digitalWrite(VALVE_OUT, LOW);
+  digitalWrite(PUMP, HIGH);
+}
 
 // DEFLATE ALL FUNCTION:
-
+void inflateAllMode() {
+  Serial.print("Inflating All");
+  digitalWrite(VALVE1, LOW);
+  digitalWrite(VALVE2, LOW);
+  digitalWrite(VALVE3, LOW);
+  digitalWrite(VALVE4, HIGH);
+  digitalWrite(VALVE_OUT, LOW);
+  digitalWrite(PUMP, HIGH);
+}
 
 // SET NEW IDEAL PRESSURES:
 void recordAndSetIdealPressures() {
@@ -542,18 +634,13 @@ void recordAndSetIdealPressures() {
   q3.ideal_pressure = q3.readPSI();
   q4.ideal_pressure = q4.readPSI();
 
-//  safeSerialPrint("Updated Ideal Pressures:\n");
-//  safeSerialPrint("Q1: " + String(currentPressureQ1) + "\n");
-//  safeSerialPrint("Q2: " + String(currentPressureQ2) + "\n");
-//  safeSerialPrint("Q3: " + String(currentPressureQ3) + "\n");
-//  safeSerialPrint("Q4: " + String(currentPressureQ4) + "\n");
+  safeSerialPrint("Updated Ideal Pressures:\n");
+  safeSerialPrint("Q1: " + String(currentPressureQ1) + "\n");
+  safeSerialPrint("Q2: " + String(currentPressureQ2) + "\n");
+  safeSerialPrint("Q3: " + String(currentPressureQ3) + "\n");
+  safeSerialPrint("Q4: " + String(currentPressureQ4) + "\n");
 }
 
-// DETECT IF SMALL LEAK OCCURED
-// - 
-
-// DETECT IF LARGE LEAK OCCURED 
-// - 
 
 
 // Algorithm helper functions
