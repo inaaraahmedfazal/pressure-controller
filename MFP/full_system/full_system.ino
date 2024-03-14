@@ -17,7 +17,8 @@ const int sensorPin4 = A4;
 static unsigned long lastRefreshTime = 0;
 const int sampling_interval = 1000;
 static unsigned int min_ctr = 0;
-const float acceptable_threshold = 0.1;
+const float acceptable_threshold = 0.1; //PSI
+const float residual_err_thres = 0.1; //PSI
 static unsigned int sampleCount = 0;
 
 
@@ -26,6 +27,15 @@ const float STD_DEV_MULTIPLIER = 1.5;
 bool pump_on = false;
 bool exhaust_on = false;
 
+
+const int MAX_REFILL_TIME = 30000;
+const int MIN_REFILL_TIME = 5000;
+const float MAX_PSI_DIFF = 0.4;
+const float MIN_PSI_DIFF = 0.01;
+const float REFILL_EQ_M = (MAX_REFILL_TIME - MIN_REFILL_TIME)/(MAX_PSI_DIFF - MIN_PSI_DIFF);
+const float REFILL_EQ_B = (MAX_PSI_DIFF*MIN_REFILL_TIME - MIN_PSI_DIFF*MAX_REFILL_TIME)/(MAX_PSI_DIFF - MIN_PSI_DIFF);
+const int REFILL_MODE_LIMIT = 240000;
+  
 //TO BE SET BY THE UI
 enum ActionState {
   MAIN_MODE = 0,
@@ -35,8 +45,7 @@ enum ActionState {
   INFLATE_QUAD = 4, 
   DEFLATE_QUAD = 5
 };
-
-uint8_t actionState = MAIN_MODE;
+ActionState actionState = DEFLATE_ALL;
 
 struct Queue {
   int front, rear;
@@ -44,97 +53,16 @@ struct Queue {
   float* items;
 };
 
-// Function to initialize a queue with a specified maximum size
-void initializeQueue(struct Queue* queue, int size) {
-    queue->front = -1;
-    queue->rear = -1;
-    queue->maxSize = size;
-    queue->items = (float*)malloc(size * sizeof(float));
-}
-
-void safeSerialPrint(String msg) {
-  while (Serial.availableForWrite() == 0) {
-    delay(1); // Wait for the buffer to become available
-  }
-  Serial.print(msg);
-}
-
 struct LeakLog {
   unsigned int detectionTimestamps[4]; // stores logs for last hour or most recent log if greater than an hour
   int count; // Current number of detections
 };
 
-// Function to check if the queue is empty
-int isEmpty(struct Queue* queue) {
-    return (queue->front == -1 && queue->rear == -1);
-}
-
-// Function to check if the queue is full
-int isFull(struct Queue* queue) {
-    return (queue->rear + 1) % queue->maxSize == queue->front;
-}
-
-// Function to add an element to the rear of the queue
-void enqueue(struct Queue* queue, float value) {
-    if (isFull(queue)) {
-        return;
-    } else if (isEmpty(queue)) {
-        queue->front = queue->rear = 0;
-    } else {
-        queue->rear = (queue->rear + 1) % queue->maxSize;
-    }
-
-    queue->items[queue->rear] = value;
-}
-
-
-// Function to remove an element from the front of the queue
-float dequeue(struct Queue* queue) {
-    float dequeuedItem;
-
-    if (isEmpty(queue)) {
-        return -1; // Return a special value to indicate an error
-    } else if (queue->front == queue->rear) {
-        dequeuedItem = queue->items[queue->front];
-        queue->front = queue->rear = -1;
-    } else {
-        dequeuedItem = queue->items[queue->front];
-        queue->front = (queue->front + 1) % queue->maxSize;
-    }
-    return dequeuedItem;
-}
-
-// Function to get the front element of the queue without removing it
-float front(struct Queue* queue) {
-    if (isEmpty(queue)) {
-        return -1; // Return a special value to indicate an error
-    }
-
-    return queue->items[queue->front];
-}
-
-// Function to calculate the mean of all values in the queue
-float calculateMean(struct Queue* queue) {
-    if (isEmpty(queue)) {
-        return -1.0; // Return a special value to indicate an error
-    }
-
-    float sum = 0.0;
-    int count = 0;
-    int i = queue->front;
-
-    do {
-        sum += queue->items[i];
-        count++;
-        i = (i + 1) % queue->maxSize;
-    } while (i != (queue->rear + 1) % queue->maxSize);
-
-    return sum / count;
-}
 
 // Function to calculate the standard deviation of all values in the queue
 float calculateStdDev(struct Queue* queue) {
   if (isEmpty(queue)) {
+    //printf("Queue is empty. Cannot calculate standard deviation.\n");
     return -1.0; // Return a special value to indicate an error
   }
 
@@ -158,6 +86,7 @@ float getMovingAverage(struct Queue* queue){
   float mean = calculateMean(queue);
   float std = calculateStdDev(queue);
   if (isEmpty(queue)) {
+      //printf("Queue is empty. Cannot calculate mean.\n");
       return -1.0; // Return a special value to indicate an error
   }
   
@@ -181,6 +110,7 @@ void destroyQueue(struct Queue* queue) {
     free(queue->items);
     queue->front = queue->rear = -1;
 }
+
 class Quadrant {
   float calibration_m;
   float calibration_b;
@@ -188,7 +118,6 @@ class Quadrant {
   int sensor_pin;
   int valve_pin;
   struct LeakLog leak_log;
-
   public:
     bool hasSmallLeak;
     bool hasLargeLeak;
@@ -242,7 +171,7 @@ class Quadrant {
   void updateLeakLog() {
     unsigned long currentTime = millis();
     unsigned int currentMinutes = currentTime / 60000; // Convert current time to minutes
-
+    
     // Remove entries older than 1 hour, except the most recent if all are old
     int recentIndex = -1; // Track the index of the first recent entry within the last hour
     for (int i = leak_log.count - 1; i >= 0; i--) {
@@ -277,33 +206,59 @@ class Quadrant {
   }
 
   void evaluateLeakSeverity() {
-      unsigned int currentMinutes = millis() / 60000; // Get current time in minutes
-      int countLastHour = 0;
-      bool hasActuationLast24Hours = false;
-    
-      for(int i = 0; i < leak_log.count; i++) {
-        unsigned int minutesAgo = currentMinutes - leak_log.detectionTimestamps[i];
-    
-        if (minutesAgo <= 60) { // Checks if within the last hour
-          countLastHour++;
-        }
-        if (minutesAgo <= 1440) { // Checks if within the last 24 hours
-          hasActuationLast24Hours = true;
-        }
-      }
+    unsigned int currentMinutes = millis() / 60000; // Get current time in minutes
+    int countLastHour = 0;
+    bool hasActuationLast24Hours = false;
   
-      if (countLastHour > 2) {
-        hasLargeLeak = true;
-        hasSmallLeak = false;
-      } else if(hasActuationLast24Hours) {
-        hasSmallLeak = true;
-        hasLargeLeak = false;
-      } else {
-        hasSmallLeak = false;
-        hasLargeLeak = false;
+    for(int i = 0; i < leak_log.count; i++) {
+      unsigned int minutesAgo = currentMinutes - leak_log.detectionTimestamps[i];
+  
+      if (minutesAgo <= 60) { // Checks if within the last hour
+        countLastHour++;
+      }
+      if (minutesAgo <= 1440) { // Checks if within the last 24 hours
+        hasActuationLast24Hours = true;
       }
     }
-  
+
+    if (countLastHour > 2) {
+      hasLargeLeak = true;
+      hasSmallLeak = false;
+    } else if(hasActuationLast24Hours) {
+      hasSmallLeak = true;
+      hasLargeLeak = false;
+    } else {
+      hasSmallLeak = false;
+      hasLargeLeak = false;
+    }
+ }
+
+   void refillRoutine() {
+    float refillStartTime = millis();
+    float curTime = millis();
+    while(curTime - refillStartTime < REFILL_MODE_LIMIT && is_refilling == true) {
+      delay(3000);
+      float curPSI = readPSI();
+      float absDifference = abs(curPSI - ideal_pressure);
+      if(curPSI >= ideal_pressure || absDifference < 0.01) {
+        is_refilling = false;
+      } else {
+        int delayTime = 0;
+        if(absDifference > 0.4){
+          delayTime = MAX_REFILL_TIME;
+        }
+        else {
+          delayTime = int(REFILL_EQ_M * absDifference + REFILL_EQ_B);
+        }
+        openValve();
+        digitalWrite(PUMP, HIGH);
+        delay(delayTime);
+        digitalWrite(PUMP, LOW);
+        closeValve();
+      }
+    }
+  }
+
 };
 
 //CALIBRATION - set the initial values 
@@ -326,298 +281,12 @@ void setup() {
   pinMode(sensorPin2, INPUT);
   pinMode(sensorPin3, INPUT);
   pinMode(sensorPin4, INPUT);
-  actionState = SET_NEW_REF;
 
   q1 = new Quadrant(1, sensorPin1, VALVE1, 0.00792, -0.252, 0.54);
   q2 = new Quadrant(2, sensorPin2, VALVE2, 0.00789, -0.302, 0.59);
   q3 = new Quadrant(3, sensorPin3, VALVE3, 0.00792, -0.281, 0.70);
   q4 = new Quadrant(4, sensorPin4, VALVE4, 0.00789, -0.262, 0.20);
 }
-
-void loop() {
-  // put your main code here, to run repeatedly:
-  if(sampleCount < 6000) {
-   
-    if(millis() - lastRefreshTime >= sampling_interval) {
-      // Serial.println("sampling");
-      //Serial.println("\n\nStarting sample:\n");
-      lastRefreshTime = millis();
-
-      // currently setting state here - can set this else-where 
-      // ALSO set logic for setting reading state from UI here 
-      if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
-        actionState = INFLATE_QUAD;
-      }
-      else if(q1->is_deflating || q2->is_deflating || q3->is_deflating || q4->is_deflating){
-        actionState = DEFLATE_QUAD;
-      } 
-      
-      switch (actionState) {
-        case INFLATE_ALL:
-          inflateAllMode(); 
-          break;
-        case DEFLATE_ALL:
-          deflateAllMode();
-          break;
-        case SET_NEW_REF:
-          Serial.println("Reached Case");
-          recordAndSetIdealPressures();
-          break;  
-        case INFLATE_QUAD:
-          refillMode();
-          break;
-        case DEFLATE_QUAD:
-          deflateMode();
-          break;
-        case MAIN_MODE: 
-          if(pump_on) {
-                digitalWrite(PUMP, LOW);
-                pump_on = false;
-            }
-            if (exhaust_on) {
-              digitalWrite(VALVE_OUT, LOW);
-              exhaust_on = false;
-            }
-            q1->minuteSum += q1->readPSI();
-            q2->minuteSum += q2->readPSI();
-            q3->minuteSum += q3->readPSI();
-            q4->minuteSum += q4->readPSI();
-            mainMode();
-            break;
-        default:
-            if(pump_on) {
-                digitalWrite(PUMP, LOW);
-                pump_on = false;
-            }
-            if (exhaust_on) {
-              digitalWrite(VALVE_OUT, LOW);
-              exhaust_on = false;
-            }
-            q1->minuteSum += q1->readPSI();
-            q2->minuteSum += q2->readPSI();
-            q3->minuteSum += q3->readPSI();
-            q4->minuteSum += q4->readPSI();
-            mainMode();
-            break;
-      }
-
-      sampleCount++;
-      if(sampleCount == 1200) {
-        Serial.print("end\n");
-        delete q1;
-        delete q2;
-        delete q3;
-        delete q4;
-      }
-    } // end if millis - refreshtime
-  } // end if samplecount < 1200
-
-
-} // end loop
- 
-
-void refillMode() {
-  if(q1->is_refilling) {
-    if(q1->readPSI() >= q1->ideal_pressure) {
-      q1->is_refilling = false;
-      q1->closeValve();
-      Serial.print("Closing q1\n");
-      for(int i = 0; i < N; i++){
-        dequeue(q1->sensorData);
-      }
-      q1->updateLeakLog();
-    }
-  }
-  if(q2->is_refilling) {
-    if(q2->readPSI() >= q2->ideal_pressure) {
-      q2->is_refilling = false;
-      q2->closeValve();
-      Serial.print("Closing q2\n");
-      for(int i = 0; i < N; i++){
-        dequeue(q2->sensorData);
-      }
-       q2->updateLeakLog();
-    }
-  }
-  if(q3->is_refilling) {
-    if(q3->readPSI() >= q3->ideal_pressure) {
-      q3->is_refilling = false;
-      q3->closeValve();
-      Serial.print("Closing q3\n");
-      for(int i = 0; i < N; i++){
-        dequeue(q3->sensorData);
-      }
-       q3->updateLeakLog();
-    }
-  }
-  if(q4->is_refilling) {
-    if(q4->readPSI() >= q4->ideal_pressure) {
-      q4->is_refilling = false;
-      q4->closeValve();
-      Serial.print("Closing q4\n");
-      for(int i = 0; i < N; i++){
-        dequeue(q4->sensorData);
-      }
-       q4->updateLeakLog();
-    }
-  }
-}
-
-
-void deflateMode() {
-  if(q1->is_deflating) {
-    if(q1->readPSI() <= q1->ideal_pressure) {
-      q1->is_deflating = false;
-      q1->closeValve();
-      Serial.print("Closing q1\n");
-      for(int i = 0; i < N; i++){
-        dequeue(q1->sensorData);
-      }
-    }
-  }
-  if(q2->is_deflating) {
-    if(q2->readPSI() <= q2->ideal_pressure) {
-      q2->is_deflating = false;
-      q2->closeValve();
-      Serial.print("Closing q2\n");
-      for(int i = 0; i < N; i++){
-        dequeue(q2->sensorData);
-      }
-    }
-  }
-  if(q3->is_deflating) {
-    if(q3->readPSI() <= q3->ideal_pressure) {
-      q3->is_deflating = false;
-      q3->closeValve();
-      Serial.print("Closing q3\n");
-      for(int i = 0; i < N; i++){
-        dequeue(q3->sensorData);
-      }
-    }
-  }
-  if(q4->is_deflating) {
-    if(q4->readPSI() <= q4->ideal_pressure) {
-      q4->is_deflating = false;
-      q4->closeValve();
-      Serial.print("Closing q4\n");
-      for(int i = 0; i < N; i++){
-        dequeue(q4->sensorData);
-      }
-    }
-  }
-}
-
-void mainMode() {
-  min_ctr++;
-  //safeSerialPrint(String(min_ctr));
-  if(min_ctr == 60) {
-    min_ctr = 0;
-    float s1_cur = q1->minAvg();
-    float s2_cur = q2->minAvg();
-    float s3_cur = q3->minAvg();
-    float s4_cur = q4->minAvg();
-
-    enqueue(q1->sensorData, s1_cur);
-    enqueue(q2->sensorData, s2_cur);
-    enqueue(q3->sensorData, s3_cur);
-    enqueue(q4->sensorData, s4_cur);
-
-    Serial.print("\nMINUTE AVERAGES:\n");
-    Serial.print("Average for Q1: " + String(s1_cur) + "\n");
-    Serial.print("Average for Q2: " + String(s2_cur) + "\n");
-    Serial.print("Average for Q3: " + String(s3_cur) + "\n");
-    Serial.print("Average for Q4: " + String(s4_cur) + "\n\n");
-
-    if(isFull(q1->sensorData)) {
-      // Checking that one quadrant's data queue is full will check that all are full
-      if(is_pressure_unacceptable(s1_cur, q1->ideal_pressure)) {
-        float moving_avg1 = getMovingAverage(q1->sensorData);
-        Serial.print("Moving Average for Q1: " + String(moving_avg1) + "\n");
-        if(isAverageUnacceptable(moving_avg1, q1->ideal_pressure)) {
-          Serial.print("Opening Q1 Valve\n");
-          if (moving_avg1 < q1->ideal_pressure) {
-            q1->is_refilling = true;
-            q1->openValve();
-            pump_on = true;
-            digitalWrite(PUMP, HIGH);
-            Serial.print("Turning on pump\n");
-          } else {
-            q1->is_deflating = true;
-            q1->openValve();
-            exhaust_on = true;
-            digitalWrite(VALVE_OUT, HIGH);
-            Serial.print("Opening Exhaust valve\n");
-          }
-       
-        }
-      }
-      if(is_pressure_unacceptable(s2_cur, q2->ideal_pressure)) {
-        float moving_avg2 = getMovingAverage(q2->sensorData);
-        Serial.print("Moving Average for Q2: " + String(moving_avg2) + "\n");
-        if(isAverageUnacceptable(moving_avg2, q2->ideal_pressure)) {
-          Serial.print("Opening Q2 Valve\n");
-          if (moving_avg2 < q2->ideal_pressure) {
-            q2->is_refilling = true;
-            q2->openValve();
-            pump_on = true;
-            digitalWrite(PUMP, HIGH);
-          } else {
-            q2->is_deflating = true;
-            q2->openValve();
-            exhaust_on = true;
-            digitalWrite(VALVE_OUT, HIGH);
-            Serial.print("Opening Exhaust valve\n");
-          }
-        
-        }
-      }
-      if(is_pressure_unacceptable(s3_cur, q3->ideal_pressure)){
-        float moving_avg3 = getMovingAverage(q3->sensorData);
-        Serial.print("Moving Average for Q3: " + String(moving_avg3) + "\n");
-        if(isAverageUnacceptable(moving_avg3, q3->ideal_pressure)) {
-          Serial.print("Opening Q3 Valve\n");
-          if (moving_avg3 < q3->ideal_pressure) {
-          q3->is_refilling = true;
-          q3->openValve();
-          pump_on = true;
-          digitalWrite(PUMP, HIGH);
-        } else {
-          q3->is_deflating = true;
-          q3->openValve();
-          exhaust_on = true;
-          digitalWrite(VALVE_OUT, HIGH);
-          Serial.print("Opening Exhaust valve\n");
-        }
-      }
-      }
-      if(is_pressure_unacceptable(s4_cur, q4->ideal_pressure)){
-        float moving_avg4 = getMovingAverage(q4->sensorData);
-        Serial.print("Moving Average for Q4: " + String(moving_avg4) + "\n");
-        if(isAverageUnacceptable(moving_avg4, q4->ideal_pressure)) {
-          Serial.print("Opening Q4 Valve\n");
-           if (moving_avg4 < q4->ideal_pressure) {
-            q4->is_refilling = true;
-            q4->openValve();
-            pump_on = true;
-            digitalWrite(PUMP, HIGH);
-          } else {
-            q4->is_deflating = true;
-            q4->openValve();
-            exhaust_on = true;
-            digitalWrite(VALVE_OUT, HIGH);
-            Serial.print("Opening Exhaust valve\n");
-          }
-      }
-    }
-  }
-  }
-  q1->evaluateLeakSeverity();
-  q2->evaluateLeakSeverity();
-  q3->evaluateLeakSeverity();
-  q4->evaluateLeakSeverity();
-  
-}
-
 
 // FUNCTIONS FOR SET-MODE -----------------------------------------
 
@@ -631,7 +300,6 @@ void deflateAllMode() {
   digitalWrite(PUMP, LOW);
 }
 
-// DEFLATE ALL FUNCTION:
 void inflateAllMode() {
   Serial.print("Inflating All");
   digitalWrite(VALVE1, HIGH);
@@ -644,7 +312,6 @@ void inflateAllMode() {
 
 // SET NEW IDEAL PRESSURES:
 void recordAndSetIdealPressures() {
-  Serial.println("Reached set");
   // Read the current pressure for each quadrant
   float currentPressureQ1 = q1->readPSI();
   float currentPressureQ2 = q2->readPSI();
@@ -652,25 +319,388 @@ void recordAndSetIdealPressures() {
   float currentPressureQ4 = q4->readPSI();
 
   // Update the ideal pressure for each quadrant
-  q1->ideal_pressure = currentPressureQ1;
-  q2->ideal_pressure = currentPressureQ2;
-  q3->ideal_pressure = currentPressureQ3;
-  q4->ideal_pressure = currentPressureQ4;
+  q1->ideal_pressure = q1->readPSI();
+  q2->ideal_pressure = q2->readPSI();
+  q3->ideal_pressure = q3->readPSI();
+  q4->ideal_pressure = q4->readPSI();
 
-  Serial.print("Updated Ideal Pressures:\n");
-  Serial.print("Q1: " + String(currentPressureQ1) + "\n");
-  Serial.print("Q2: " + String(currentPressureQ2) + "\n");
-  Serial.print("Q3: " + String(currentPressureQ3) + "\n");
-  Serial.print("Q4: " + String(currentPressureQ4) + "\n");
-  actionState = MAIN_MODE;
+  Serial.println("Updated Ideal Pressures:\n");
+  Serial.println("Q1: " + String(currentPressureQ1) + "\n");
+  Serial.println("Q2: " + String(currentPressureQ2) + "\n");
+  Serial.println("Q3: " + String(currentPressureQ3) + "\n");
+  Serial.println("Q4: " + String(currentPressureQ4) + "\n");
 }
 
+
+float mean(float arr[], int n){
+  float sum = 0.0;
+  for (int i = 0; i < n; i++) {
+    sum += arr[i];
+  }
+  return sum / n;
+}
+
+float get_slope(float x[], float y[], int n){
+  float sum_xy = 0.0;
+  float sum_x_squared = 0.0;
+
+  float x_mean = mean(x, n);
+  float y_mean = mean(y, n);
+
+  for (int i = 0; i < n; i++) {
+    sum_xy += (x[i] - x_mean) * (y[i] - y_mean);
+    sum_x_squared += (x[i] - x_mean) * (x[i] - x_mean);
+  }
+
+  return sum_xy / sum_x_squared;
+}
+
+
+float get_intercept(float x[], float y[], int n, float slope){
+  float x_mean = mean(x, n);
+  float y_mean = mean(y, n);
+  return y_mean - slope * x_mean;
+}
+
+bool is_datapoint_an_outlier(struct Queue* queue, float new_data){
+  float mean = calculateMean(queue);
+  float std = calculateStdDev(queue);
+  int ctr = 0;
+  for(int i = 0; i < N; i++){
+    if(abs(queue->items[i] - mean) <= STD_DEV_MULTIPLIER * std){
+      ctr++;
+    }
+  }
+  float filtered_data[ctr - 1];
+  float filtered_indices[ctr - 1];
+  int j = 0;
+  for(int i = 0; i < N-1; i++){
+    if(abs(queue->items[i] - mean) <= STD_DEV_MULTIPLIER * std){
+      filtered_data[j] = queue->items[i];
+      filtered_indices[j] = i;
+      j++;
+    }
+   }
+  float slope = get_slope(filtered_indices, filtered_data, ctr - 1);
+  float intercept = get_intercept(filtered_indices, filtered_data, ctr - 1, slope);
+
+  float predicted_y = slope * (N-1) + intercept;
+  float residual_error = abs(predicted_y - queue->items[N-1]);
+
+  return residual_error > residual_err_thres;
+  
+}
+
+void refillMode() {
+  if(q1->is_refilling) {
+  q1->refillRoutine();
+    //safeSerialPrint(String("Closing q1\n"));
+    for(int i = 0; i < N; i++){
+      dequeue(q1->sensorData);
+    }
+    q1->updateLeakLog();
+  }
+  if(q2->is_refilling) {
+  q2->refillRoutine();
+    //safeSerialPrint(String("Closing q2\n"));
+    for(int i = 0; i < N; i++){
+      dequeue(q2->sensorData);
+    }
+    q2->updateLeakLog();
+  }
+  if(q3->is_refilling) {
+  q3->refillRoutine();
+    //safeSerialPrint(String("Closing q3\n"));
+    for(int i = 0; i < N; i++){
+      dequeue(q3->sensorData);
+    }
+    q3->updateLeakLog();
+  }
+  if(q4->is_refilling) {
+  q4->refillRoutine();
+    //safeSerialPrint(String("Closing q4\n"));
+    for(int i = 0; i < N; i++){
+      dequeue(q4->sensorData);
+    }
+    q4->updateLeakLog();
+  }
+} // end refill mode 
+
+
+void deflateMode() {
+  if(q1->is_deflating) {
+    if(q1->readPSI() <= q1->ideal_pressure) {
+      q1->is_deflating = false;
+      q1->closeValve();
+      //safeSerialPrint(String("Closing q1\n"));
+      for(int i = 0; i < N; i++){
+        dequeue(q1->sensorData);
+      }
+    }
+  }
+  if(q2->is_deflating) {
+    if(q2->readPSI() <= q2->ideal_pressure) {
+      q2->is_deflating = false;
+      q2->closeValve();
+      //safeSerialPrint(String("Closing q2\n"));
+      for(int i = 0; i < N; i++){
+        dequeue(q2->sensorData);
+      }
+    }
+  }
+  if(q3->is_deflating) {
+    if(q3->readPSI() <= q3->ideal_pressure) {
+      q3->is_deflating = false;
+      q3->closeValve();
+      //safeSerialPrint(String("Closing q3\n"));
+      for(int i = 0; i < N; i++){
+        dequeue(q3->sensorData);
+      }
+    }
+  }
+  if(q4->is_deflating) {
+    if(q4->readPSI() <= q4->ideal_pressure) {
+      q4->is_deflating = false;
+      q4->closeValve();
+      //safeSerialPrint(String("Closing q4\n"));
+      for(int i = 0; i < N; i++){
+        dequeue(q4->sensorData);
+      }
+    }
+  }
+}
+
+
+
+void pressureCheck(class Quadrant* q, float curr_min_avg) {
+  //float moving_avg = getMovingAverage(q->sensorData); Serial.println("Moving Average: " + String(moving_avg) + "\n");
+// ^maybe use this for the has been seated check where we would check if this avg > 0.01 or something
+// may need to add extra checks for is seated logic individual to the quadrant
+  // if 15 min worth of data, and current point outside ideal range, and curr point is not an outlier (consistent trend)
+  if(isFull(q->sensorData)&& is_pressure_unacceptable(curr_min_avg, q->ideal_pressure)
+    && is_datapoint_an_outlier(q->sensorData, curr_min_avg)){
+      if (curr_min_avg < q->ideal_pressure) {
+        q->is_refilling = true;
+      } else {
+        q->is_deflating = true;
+      }
+   }
+} // end checkQuad
+
+void mainMode() {
+  min_ctr++;
+  if(min_ctr == 60) {
+    min_ctr = 0;
+    float s1_curr = q1->minAvg();
+    float s2_curr = q2->minAvg();
+    float s3_curr = q3->minAvg();
+    float s4_curr = q4->minAvg();
+
+    enqueue(q1->sensorData, s1_curr);
+    enqueue(q2->sensorData, s2_curr);
+    enqueue(q3->sensorData, s3_curr);
+    enqueue(q4->sensorData, s4_curr);
+
+    Serial.println("\nMINUTE AVERAGES:\n");
+    Serial.println("Average for Q1: " + String(s1_curr) + "\n");
+    Serial.println("Average for Q2: " + String(s2_curr) + "\n");
+    Serial.println("Average for Q3: " + String(s3_curr) + "\n");
+    Serial.println("Average for Q4: " + String(s4_curr) + "\n\n");
+    
+    if (user_is_seated(s1_curr, s2_curr,s3_curr, s4_curr)){
+      pressureCheck(q1, s1_curr);
+      pressureCheck(q2, s2_curr);
+      pressureCheck(q3, s3_curr);
+      pressureCheck(q4, s4_curr);
+    }
+    q1->evaluateLeakSeverity();
+    q2->evaluateLeakSeverity();
+    q3->evaluateLeakSeverity();
+    q4->evaluateLeakSeverity();
+  } // end if a minute is reached
+}// end main mode
 
 
 // Algorithm helper functions
 bool is_pressure_unacceptable(float current_pressure, float ideal_pressure){
   return abs(current_pressure - ideal_pressure) > acceptable_threshold;
 }
-bool isAverageUnacceptable(float moving_average, float ideal_pressure){
-  return abs(moving_average - ideal_pressure) > acceptable_threshold && moving_average > -10;
+
+bool user_is_seated(float q1_curr, float q2_curr, float q3_curr, float q4_curr) {
+  // Initialize a counter for the number of floats less than 0.1
+  int count_less_than_seated = 0;
+  
+  // Check each float and increment the counter if it's less than 0.1
+  if (q1_curr < 0.05) count_less_than_seated++;
+  if (q2_curr < 0.05) count_less_than_seated++;
+  if (q3_curr < 0.05) count_less_than_seated++;
+  if (q4_curr < 0.05) count_less_than_seated++;
+
+  // If three or more floats are less than 0.1, return false
+  if (count_less_than_seated > 1) {
+    Serial.println("user is detected to be not seated");
+    return false;
+  } else {
+    Serial.println("user is detected to be seated");
+    return true; // Otherwise, return true
+  }
+}
+
+
+
+void loop() {
+  if(sampleCount < 1200) {
+    if(millis() - lastRefreshTime >= sampling_interval) {
+      lastRefreshTime = millis();
+       if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
+         actionState = INFLATE_QUAD;
+        } else if(q1->is_deflating || q2->is_deflating || q3->is_deflating || q4->is_deflating){
+          actionState = DEFLATE_QUAD;
+        } else {
+          actionState = MAIN_MODE;
+        }
+         actionState = INFLATE_ALL;
+    
+       switch (actionState) {
+          case INFLATE_ALL:
+            inflateAllMode(); 
+            Serial.println("reached3");
+            break;
+          case DEFLATE_ALL:
+            deflateAllMode();
+            break;
+          case SET_NEW_REF:
+            recordAndSetIdealPressures();
+            break;  
+          case INFLATE_QUAD:
+            refillMode();
+            break;
+          case DEFLATE_QUAD:
+            deflateMode();
+            break;
+          case MAIN_MODE: 
+            if(pump_on) {
+                  digitalWrite(PUMP, LOW);
+                  pump_on = false;
+              }
+              if (exhaust_on) {
+                digitalWrite(VALVE_OUT, LOW);
+                exhaust_on = false;
+              }
+              q1->minuteSum += q1->readPSI();
+              q2->minuteSum += q2->readPSI();
+              q3->minuteSum += q3->readPSI();
+              q4->minuteSum += q4->readPSI();
+              mainMode();
+              break;
+          default:
+              if(pump_on) {
+                  digitalWrite(PUMP, LOW);
+                  pump_on = false;
+              }
+              if (exhaust_on) {
+                digitalWrite(VALVE_OUT, LOW);
+                exhaust_on = false;
+              }
+              q1->minuteSum += q1->readPSI();
+              q2->minuteSum += q2->readPSI();
+              q3->minuteSum += q3->readPSI();
+              q4->minuteSum += q4->readPSI();
+              mainMode();
+              break;
+        } // end switch action state 
+
+      sampleCount++;
+      if(sampleCount == 1200) {
+        //safeSerialPrint(String("end\n"));
+        delete q1;
+        delete q2;
+        delete q3;
+        delete q4;
+      }
+  
+    }// end if millis - refreshtime
+  } // end if samplecount < 1200
+} // end loop 
+
+
+// QUEUE HELPER FUNCTIONS: ======================================================================================
+
+// Function to initialize a queue with a specified maximum size
+void initializeQueue(struct Queue* queue, int size) {
+    queue->front = -1;
+    queue->rear = -1;
+    queue->maxSize = size;
+    queue->items = (float*)malloc(size * sizeof(float));
+}
+
+// Function to check if the queue is empty
+int isEmpty(struct Queue* queue) {
+    return (queue->front == -1 && queue->rear == -1);
+}
+
+// Function to check if the queue is full
+int isFull(struct Queue* queue) {
+    return (queue->rear + 1) % queue->maxSize == queue->front;
+}
+
+// Function to add an element to the rear of the queue
+void enqueue(struct Queue* queue, float value) {
+    if (isFull(queue)) {
+        return;
+    } else if (isEmpty(queue)) {
+        queue->front = queue->rear = 0;
+    } else {
+        queue->rear = (queue->rear + 1) % queue->maxSize;
+    }
+
+    queue->items[queue->rear] = value;
+}
+
+
+// Function to remove an element from the front of the queue
+float dequeue(struct Queue* queue) {
+    float dequeuedItem;
+
+    if (isEmpty(queue)) {
+        //printf("Queue is empty. Cannot dequeue\n");
+        return -1; // Return a special value to indicate an error
+    } else if (queue->front == queue->rear) {
+        dequeuedItem = queue->items[queue->front];
+        queue->front = queue->rear = -1;
+    } else {
+        dequeuedItem = queue->items[queue->front];
+        queue->front = (queue->front + 1) % queue->maxSize;
+    }
+    return dequeuedItem;
+}
+
+// Function to get the front element of the queue without removing it
+float front(struct Queue* queue) {
+    if (isEmpty(queue)) {
+        //printf("Queue is empty\n");
+        return -1; // Return a special value to indicate an error
+    }
+
+    return queue->items[queue->front];
+}
+
+// Function to calculate the mean of all values in the queue
+float calculateMean(struct Queue* queue) {
+    if (isEmpty(queue)) {
+        //printf("Queue is empty. Cannot calculate mean.\n");
+        return -1.0; // Return a special value to indicate an error
+    }
+
+    float sum = 0.0;
+    int count = 0;
+    int i = queue->front;
+
+    do {
+        sum += queue->items[i];
+        count++;
+        i = (i + 1) % queue->maxSize;
+    } while (i != (queue->rear + 1) % queue->maxSize);
+
+    return sum / count;
 }
