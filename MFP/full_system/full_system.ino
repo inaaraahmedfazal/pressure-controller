@@ -1,5 +1,6 @@
-#define N 5
+#define N 15
 #define M 4
+
 
 //SOLENOID VALVES
 const int VALVE1 = 2;
@@ -21,7 +22,6 @@ const float acceptable_threshold = 0.1; //PSI
 const float residual_err_thres = 0.1; //PSI
 static unsigned int sampleCount = 0;
 
-
 const float STD_DEV_MULTIPLIER = 1.5;
 
 bool pump_on = false;
@@ -34,7 +34,7 @@ const float MAX_PSI_DIFF = 0.4;
 const float MIN_PSI_DIFF = 0.01;
 const float REFILL_EQ_M = (MAX_REFILL_TIME - MIN_REFILL_TIME)/(MAX_PSI_DIFF - MIN_PSI_DIFF);
 const float REFILL_EQ_B = (MAX_PSI_DIFF*MIN_REFILL_TIME - MIN_PSI_DIFF*MAX_REFILL_TIME)/(MAX_PSI_DIFF - MIN_PSI_DIFF);
-const int REFILL_MODE_LIMIT = 240000;
+const unsigned long REFILL_MODE_LIMIT = 240000;
   
 //TO BE SET BY THE UI
 enum ActionState {
@@ -234,13 +234,16 @@ class Quadrant {
  }
 
    void refillRoutine() {
-    float refillStartTime = millis();
-    float curTime = millis();
+    unsigned long refillStartTime = millis();
+    unsigned long curTime = millis();
     while(curTime - refillStartTime < REFILL_MODE_LIMIT && is_refilling == true) {
       delay(3000);
       float curPSI = readPSI();
       float absDifference = abs(curPSI - ideal_pressure);
+      Serial.print("abs diff:  ");
+      Serial.println(absDifference);
       if(curPSI >= ideal_pressure || absDifference < 0.01) {
+        Serial.println("stop refilling");
         is_refilling = false;
       } else {
         int delayTime = 0;
@@ -249,6 +252,8 @@ class Quadrant {
         }
         else {
           delayTime = int(REFILL_EQ_M * absDifference + REFILL_EQ_B);
+          Serial.print("delay time:  ");
+          Serial.println(delayTime);
         }
         openValve();
         digitalWrite(PUMP, HIGH);
@@ -256,6 +261,7 @@ class Quadrant {
         digitalWrite(PUMP, LOW);
         closeValve();
       }
+      curTime = millis();
     }
   }
 
@@ -281,6 +287,7 @@ void setup() {
   pinMode(sensorPin2, INPUT);
   pinMode(sensorPin3, INPUT);
   pinMode(sensorPin4, INPUT);
+  actionState = SET_NEW_REF;
 
   q1 = new Quadrant(1, sensorPin1, VALVE1, 0.00792, -0.252, 0.54);
   q2 = new Quadrant(2, sensorPin2, VALVE2, 0.00789, -0.302, 0.59);
@@ -329,6 +336,7 @@ void recordAndSetIdealPressures() {
   Serial.println("Q2: " + String(currentPressureQ2) + "\n");
   Serial.println("Q3: " + String(currentPressureQ3) + "\n");
   Serial.println("Q4: " + String(currentPressureQ4) + "\n");
+  actionState = MAIN_MODE;
 }
 
 
@@ -392,10 +400,12 @@ bool is_datapoint_an_outlier(struct Queue* queue, float new_data){
 }
 
 void refillMode() {
+   Serial.println("refill Mode");
   if(q1->is_refilling) {
-  q1->refillRoutine();
+    q1->refillRoutine();
     //safeSerialPrint(String("Closing q1\n"));
     for(int i = 0; i < N; i++){
+      Serial.println("dequeing"); 
       dequeue(q1->sensorData);
     }
     q1->updateLeakLog();
@@ -409,8 +419,9 @@ void refillMode() {
     q2->updateLeakLog();
   }
   if(q3->is_refilling) {
-  q3->refillRoutine();
-    //safeSerialPrint(String("Closing q3\n"));
+    Serial.println("Should enter refill routine");
+    q3->refillRoutine();
+
     for(int i = 0; i < N; i++){
       dequeue(q3->sensorData);
     }
@@ -439,6 +450,7 @@ void deflateMode() {
     }
   }
   if(q2->is_deflating) {
+    
     if(q2->readPSI() <= q2->ideal_pressure) {
       q2->is_deflating = false;
       q2->closeValve();
@@ -473,16 +485,29 @@ void deflateMode() {
 
 
 void pressureCheck(class Quadrant* q, float curr_min_avg) {
+
   //float moving_avg = getMovingAverage(q->sensorData); Serial.println("Moving Average: " + String(moving_avg) + "\n");
 // ^maybe use this for the has been seated check where we would check if this avg > 0.01 or something
 // may need to add extra checks for is seated logic individual to the quadrant
   // if 15 min worth of data, and current point outside ideal range, and curr point is not an outlier (consistent trend)
+//  Serial.print("isFull: ");
+//  Serial.println(isFull(q->sensorData));
+//  Serial.print("is unacceptable: ");
+//  Serial.println(is_pressure_unacceptable(curr_min_avg, q->ideal_pressure));
+//  Serial.print("is outlier: ");
+//  Serial.println(is_datapoint_an_outlier(q->sensorData, curr_min_avg));
+//  Serial.println(" ");
+  
   if(isFull(q->sensorData)&& is_pressure_unacceptable(curr_min_avg, q->ideal_pressure)
-    && is_datapoint_an_outlier(q->sensorData, curr_min_avg)){
+    && !is_datapoint_an_outlier(q->sensorData, curr_min_avg)){
+      Serial.println("checking quad");
       if (curr_min_avg < q->ideal_pressure) {
+        Serial.println("set to refill");
         q->is_refilling = true;
       } else {
+        Serial.println("set to deflate");
         q->is_deflating = true;
+        q->openValve();
       }
    }
 } // end checkQuad
@@ -507,7 +532,7 @@ void mainMode() {
     Serial.println("Average for Q3: " + String(s3_curr) + "\n");
     Serial.println("Average for Q4: " + String(s4_curr) + "\n\n");
     
-    if (user_is_seated(s1_curr, s2_curr,s3_curr, s4_curr)){
+    if (user_is_seated(s1_curr, s2_curr, s3_curr, s4_curr)){
       pressureCheck(q1, s1_curr);
       pressureCheck(q2, s2_curr);
       pressureCheck(q3, s3_curr);
@@ -531,14 +556,14 @@ bool user_is_seated(float q1_curr, float q2_curr, float q3_curr, float q4_curr) 
   int count_less_than_seated = 0;
   
   // Check each float and increment the counter if it's less than 0.1
-  if (q1_curr < 0.05) count_less_than_seated++;
-  if (q2_curr < 0.05) count_less_than_seated++;
-  if (q3_curr < 0.05) count_less_than_seated++;
-  if (q4_curr < 0.05) count_less_than_seated++;
+  if (q1_curr < 0.03) count_less_than_seated++;
+  if (q2_curr < 0.03) count_less_than_seated++;
+  if (q3_curr < 0.03) count_less_than_seated++;
+  if (q4_curr < 0.03) count_less_than_seated++;
 
   // If three or more floats are less than 0.1, return false
   if (count_less_than_seated > 1) {
-    Serial.println("user is detected to be not seated");
+    //Serial.println("user is detected to be not seated");
     return false;
   } else {
     Serial.println("user is detected to be seated");
@@ -549,22 +574,25 @@ bool user_is_seated(float q1_curr, float q2_curr, float q3_curr, float q4_curr) 
 
 
 void loop() {
+
   if(sampleCount < 1200) {
     if(millis() - lastRefreshTime >= sampling_interval) {
       lastRefreshTime = millis();
        if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
+         Serial.println("action state set to inflate");
          actionState = INFLATE_QUAD;
         } else if(q1->is_deflating || q2->is_deflating || q3->is_deflating || q4->is_deflating){
+          Serial.println("action state set to deflate");
           actionState = DEFLATE_QUAD;
-        } else {
+        } 
+        else if (actionState != SET_NEW_REF) {
           actionState = MAIN_MODE;
         }
-         actionState = INFLATE_ALL;
+        
     
        switch (actionState) {
           case INFLATE_ALL:
             inflateAllMode(); 
-            Serial.println("reached3");
             break;
           case DEFLATE_ALL:
             deflateAllMode();
@@ -612,7 +640,7 @@ void loop() {
 
       sampleCount++;
       if(sampleCount == 1200) {
-        //safeSerialPrint(String("end\n"));
+        Serial.println(String("end\n"));
         delete q1;
         delete q2;
         delete q3;
@@ -647,8 +675,12 @@ int isFull(struct Queue* queue) {
 // Function to add an element to the rear of the queue
 void enqueue(struct Queue* queue, float value) {
     if (isFull(queue)) {
-        return;
-    } else if (isEmpty(queue)) {
+        // If the queue is full, dequeue the front element
+        dequeue(queue);
+    }
+    
+    // Enqueue the new element at the rear
+    if (isEmpty(queue)) {
         queue->front = queue->rear = 0;
     } else {
         queue->rear = (queue->rear + 1) % queue->maxSize;
@@ -691,11 +723,9 @@ float calculateMean(struct Queue* queue) {
         //printf("Queue is empty. Cannot calculate mean.\n");
         return -1.0; // Return a special value to indicate an error
     }
-
     float sum = 0.0;
     int count = 0;
     int i = queue->front;
-
     do {
         sum += queue->items[i];
         count++;
