@@ -1,6 +1,12 @@
 // LED PIN DEFINITIONS --------------------------------------------------
 #include <bluefruit.h>
+#include <SoftwareSerial.h>
 //Adafruit_BluefruitLE_SPI ble(SPI_CS, SPI_IRQ, SPI_RST);
+
+const int RX = 15;
+const int TX = 16;
+
+SoftwareSerial ccSerial(RX, TX);
 
 byte receivedLeakStatus;
 unsigned long debounceDelay = 50;
@@ -89,6 +95,17 @@ volatile bool mutePressed = false;
 unsigned long set_pressed_time = 0; // time set new reference value button is pressed
 unsigned long preset_pressed_time = 0; // time both inflate and deflate are pressed
 //=======================================================================
+
+// ACTION STATE
+enum ActionState {
+  MAIN_MODE = 0,
+  INFLATE_ALL = 1,
+  DEFLATE_ALL = 2,
+  SET_NEW_REF = 3,
+  INFLATE_QUAD = 4, 
+  DEFLATE_QUAD = 5,
+  GO_TO_REF = 6
+};
 
 void setup() {
 //  ble.begin();
@@ -213,47 +230,62 @@ void recordNewValue(){
   // collect 60 values
 }
 
+byte extractByteAfterSubstring(String inputString, String substring) {
+  int index = inputString.indexOf(substring);
+  if (index != -1 && index + substring.length() < inputString.length()) {
+    char nextChar = inputString.charAt(index + substring.length());
+    return static_cast<byte>(nextChar);
+  }
+  return 0; // Default return if substring not found or no character after it
+}
 void checkLeaks(){
-//  byte receivedLeakStatus = ble.readCharacteristic(leakStatusCharId);// to modify
-//  q1_small = receivedLeakStatus & 1;    // Checks the 0th bit
-//  q1_large = receivedLeakStatus & (1 << 1); // Checks the 1st bit
-//  q2_small = receivedLeakStatus & (1 << 2); // Checks the 2nd bit
-//  q2_large = receivedLeakStatus & (1 << 3); // Checks the 3rd bit
-//  q3_small = receivedLeakStatus & (1 << 4); // Checks the 4th bit
-//  q3_large = receivedLeakStatus & (1 << 5); // Checks the 5th bit
-//  q4_small = receivedLeakStatus & (1 << 6); // Checks the 6th bit
-//  q4_large = receivedLeakStatus & (1 << 7); // Checks the 7th bit
+  String serialReceived = "";
+  while(ccSerial.available()) {
+    serialReceived += ccSerial.read();
+  }
+  if (serialReceived.indexOf("LEAK STATUS->") != -1) {
+    receivedLeakStatus = extractByteAfterSubstring(serialReceived, "LEAK STATUS->");
+  }
+  byte receivedLeakStatus = ccSerial.read(); // to modify
+  q1_small = receivedLeakStatus & 1;    // Checks the 0th bit
+  q1_large = receivedLeakStatus & (1 << 1); // Checks the 1st bit
+  q2_small = receivedLeakStatus & (1 << 2); // Checks the 2nd bit
+  q2_large = receivedLeakStatus & (1 << 3); // Checks the 3rd bit
+  q3_small = receivedLeakStatus & (1 << 4); // Checks the 4th bit
+  q3_large = receivedLeakStatus & (1 << 5); // Checks the 5th bit
+  q4_small = receivedLeakStatus & (1 << 6); // Checks the 6th bit
+  q4_large = receivedLeakStatus & (1 << 7); // Checks the 7th bit
  
   if(q1_small){
-  setLightYellow(red_q1, green_q1);
+    setLightYellow(red_q1, green_q1);
   } else if (q1_large) {
-  setLightRed(red_q1, green_q1);
+    setLightRed(red_q1, green_q1);
   } else {
-  setLightOff(red_q1, green_q1);
+    setLightOff(red_q1, green_q1);
   }
 
-   if (q2_small){
-  setLightYellow(red_q2, green_q2);
+  if (q2_small){
+    setLightYellow(red_q2, green_q2);
   } else if (q2_large) {
-  setLightRed(red_q2, green_q2);
+    setLightRed(red_q2, green_q2);
   } else {
   setLightOff(red_q2, green_q2);
   }
 
-   if (q3_small){
-  setLightYellow(red_q3, green_q3);
+  if (q3_small){
+    setLightYellow(red_q3, green_q3);
   } else if (q3_large) {
-  setLightRed(red_q3, green_q3);
+    setLightRed(red_q3, green_q3);
   } else {
-  setLightOff(red_q3, green_q3);
+    setLightOff(red_q3, green_q3);
   }
  
   if (q4_small){
-  setLightYellow(red_q4, green_q4);
+    setLightYellow(red_q4, green_q4);
   } else if (q4_large) {
-  setLightRed(red_q4, green_q4);
+    setLightRed(red_q4, green_q4);
   } else {
-  setLightOff(red_q4, green_q4);
+    setLightOff(red_q4, green_q4);
   }
 }
 
@@ -304,6 +336,11 @@ void springLeak() {
 }
 
 void loop() {
+  // CHECK LEAK STATUS BY READING ONE BYTE FROM SERIAL MONITOR
+  if ccSerial.available() {
+    checkLeaks();
+  }
+
    springLeak();
    // TO DO: will have to update to reflect charge level
    setPowerColour(0, 255);
@@ -339,6 +376,7 @@ void loop() {
     if (button_set_state == HIGH && button_set_last_state == LOW) {
       set_pressed_time = millis();
       Serial.println("Initial Pressed set button");
+      ccSerial.write(String("ACTION STATE->" + String(ActionState.MAIN_MODE)));
       // prevent from being set to true immediately after 3 seconds are detected in the same press
       record_new_value = false;
     }
@@ -347,6 +385,7 @@ void loop() {
       record_new_value = true;
       flashAllGreen();
       Serial.println("Recording new value - LEDs should flash green");
+      ccSerial.write(String("ACTION STATE->" + String(ActionState.SET_NEW_REF)));
     }
     //resets
     if (button_set_state == LOW && button_set_last_state == HIGH) {
@@ -364,9 +403,11 @@ void loop() {
     if (button_down_state == HIGH) {
       deflate_all = true;
       Serial.println("Deflate All");
+      ccSerial.write(String("ACTION STATE->" + String(ActionState.DEFLATE_ALL)));
     } else {
       deflate_all = false;
       Serial.println("Stop Deflating All");
+      ccSerial.write(String("ACTION STATE->" + String(ActionState.MAIN_MODE)));
     }
   }
 
@@ -377,9 +418,11 @@ void loop() {
     if (button_up_state == HIGH) {
       //inflate_all = true;
       Serial.println("Inflate All");
+      ccSerial.write(String("ACTION STATE->" + String(ActionState.INFLATE_ALL)));
     } else {
       //inflate_all = false;
       Serial.println("Stop Inflating All");
+      ccSerial.write(String("ACTION STATE->" + String(ActionState.MAIN_MODE)));
     }
   }
   }// end switch mode high (
@@ -403,6 +446,7 @@ void loop() {
         inflate_deflate_to_preset = true;
         flashAllGreen();
         Serial.println("Both buttons held for 3 seconds (inflate/deflate to preset)");
+        ccSerial.write(String("ACTION STATE->" + String(ActionState.GO_TO_REF)));
       }
     }else if (button_up_state == LOW || button_down_state == LOW) {
           inflate_deflate_to_preset = false; //reset

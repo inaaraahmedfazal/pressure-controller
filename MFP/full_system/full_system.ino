@@ -1,6 +1,10 @@
 #define N 15
 #define M 4
 
+#include <SoftwareSerial.h>
+const int RX = 8; //green cord
+const int TX = 9; //orange cord
+SoftwareSerial ccSerial = SoftwareSerial(RX, TX); // RX, TX
 
 //SOLENOID VALVES
 const int VALVE1 = 2;
@@ -43,7 +47,8 @@ enum ActionState {
   DEFLATE_ALL = 2,
   SET_NEW_REF = 3,
   INFLATE_QUAD = 4, 
-  DEFLATE_QUAD = 5
+  DEFLATE_QUAD = 5,
+  GO_TO_REF = 6
 };
 ActionState actionState = DEFLATE_ALL;
 
@@ -276,6 +281,7 @@ Quadrant* q4;
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);  // Initialize serial communication
+  ccSerial.begin(9600);
   pinMode(VALVE1, OUTPUT); 
   pinMode(VALVE2, OUTPUT); 
   pinMode(VALVE3, OUTPUT); 
@@ -571,13 +577,27 @@ bool user_is_seated(float q1_curr, float q2_curr, float q3_curr, float q4_curr) 
   }
 }
 
-
+ActionState getStateFromSerial(String inputString, String substring) {
+  int index = inputString.indexOf(substring);
+  if (index != -1 && index + substring.length() < inputString.length()) {
+    char nextChar = inputString.charAt(index + substring.length());
+    return nextChar - '0';
+  }
+  return -1;
+}
 
 void loop() {
 
   if(sampleCount < 1200) {
     if(millis() - lastRefreshTime >= sampling_interval) {
       lastRefreshTime = millis();
+      String receivedState = "";
+      while(ccSerial.available()) {
+        receivedState += ccSerial.read();
+      }
+      if(receivedState.indexOf("ACTION STATE->") != -1) {
+        actionState = getStateFromSerial(receivedState, "ACTION STATE->");
+      }
        if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
          Serial.println("action state set to inflate");
          actionState = INFLATE_QUAD;
