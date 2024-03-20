@@ -111,6 +111,7 @@ void setup() {
 //  ble.begin();
 //  
   Serial.begin(9600);
+  ccSerial.begin(9600);
   pinMode(red_power, OUTPUT);
   pinMode(green_power, OUTPUT);
  
@@ -203,6 +204,26 @@ void muteButtonISR() {
   }
 }
 
+void flashAllRed() {
+  turnAllOff();
+  turnAllRed();
+  delay(500);
+
+  turnAllOff();
+  delay(500);
+
+  turnAllGreen();
+  delay(500);
+
+  turnAllOff();
+  delay(500);
+
+  turnAllGreen();
+  delay(500);
+  turnAllOff();
+  
+}
+
 void flashAllGreen(){
   turnAllOff();
   turnAllGreen();
@@ -245,8 +266,12 @@ void checkLeaks(){
   }
   if (serialReceived.indexOf("LEAK STATUS->") != -1) {
     receivedLeakStatus = extractByteAfterSubstring(serialReceived, "LEAK STATUS->");
+    Serial.println(receivedLeakStatus);
   }
-  byte receivedLeakStatus = ccSerial.read(); // to modify
+  else if(serialReceived.indexOf("OVERINFLATED") != -1) {
+    Serial.println("Overinflated, should flash red");
+    flashAllRed();
+  }
   q1_small = receivedLeakStatus & 1;    // Checks the 0th bit
   q1_large = receivedLeakStatus & (1 << 1); // Checks the 1st bit
   q2_small = receivedLeakStatus & (1 << 2); // Checks the 2nd bit
@@ -256,7 +281,7 @@ void checkLeaks(){
   q4_small = receivedLeakStatus & (1 << 6); // Checks the 6th bit
   q4_large = receivedLeakStatus & (1 << 7); // Checks the 7th bit
  
-  if(q1_small){
+  if(q1_small){ 
     setLightYellow(red_q1, green_q1);
   } else if (q1_large) {
     setLightRed(red_q1, green_q1);
@@ -337,11 +362,11 @@ void springLeak() {
 
 void loop() {
   // CHECK LEAK STATUS BY READING ONE BYTE FROM SERIAL MONITOR
-  if ccSerial.available() {
+  if (ccSerial.available()) {
     checkLeaks();
   }
 
-   springLeak();
+   //springLeak();
    // TO DO: will have to update to reflect charge level
    setPowerColour(0, 255);
    
@@ -376,7 +401,8 @@ void loop() {
     if (button_set_state == HIGH && button_set_last_state == LOW) {
       set_pressed_time = millis();
       Serial.println("Initial Pressed set button");
-      ccSerial.write(String("ACTION STATE->" + String(ActionState.MAIN_MODE)));
+      String stateMessage = "ACTION STATE->" + String(MAIN_MODE) + "\n";
+      ccSerial.print(stateMessage);
       // prevent from being set to true immediately after 3 seconds are detected in the same press
       record_new_value = false;
     }
@@ -385,7 +411,9 @@ void loop() {
       record_new_value = true;
       flashAllGreen();
       Serial.println("Recording new value - LEDs should flash green");
-      ccSerial.write(String("ACTION STATE->" + String(ActionState.SET_NEW_REF)));
+      String stateMessage = "ACTION STATE->" + String(SET_NEW_REF) + "\n";
+      ccSerial.print(stateMessage);
+      Serial.println("State message" + stateMessage);
     }
     //resets
     if (button_set_state == LOW && button_set_last_state == HIGH) {
@@ -403,11 +431,13 @@ void loop() {
     if (button_down_state == HIGH) {
       deflate_all = true;
       Serial.println("Deflate All");
-      ccSerial.write(String("ACTION STATE->" + String(ActionState.DEFLATE_ALL)));
+      String stateMessage = "ACTION STATE->" + String(DEFLATE_ALL) + "\n";
+      ccSerial.print(stateMessage);
     } else {
       deflate_all = false;
       Serial.println("Stop Deflating All");
-      ccSerial.write(String("ACTION STATE->" + String(ActionState.MAIN_MODE)));
+      String stateMessage = "ACTION STATE->" + String(MAIN_MODE) + "\n";
+      ccSerial.print(stateMessage);
     }
   }
 
@@ -418,11 +448,15 @@ void loop() {
     if (button_up_state == HIGH) {
       //inflate_all = true;
       Serial.println("Inflate All");
-      ccSerial.write(String("ACTION STATE->" + String(ActionState.INFLATE_ALL)));
+      String stateMessage = "ACTION STATE->" + String(INFLATE_ALL) + "\n";
+      Serial.println(stateMessage);
+      ccSerial.print(stateMessage);
     } else {
       //inflate_all = false;
       Serial.println("Stop Inflating All");
-      ccSerial.write(String("ACTION STATE->" + String(ActionState.MAIN_MODE)));
+      String stateMessage = "ACTION STATE->" + String(MAIN_MODE) + "\n";
+      Serial.println(stateMessage);
+      ccSerial.print(stateMessage);
     }
   }
   }// end switch mode high (
@@ -446,7 +480,8 @@ void loop() {
         inflate_deflate_to_preset = true;
         flashAllGreen();
         Serial.println("Both buttons held for 3 seconds (inflate/deflate to preset)");
-        ccSerial.write(String("ACTION STATE->" + String(ActionState.GO_TO_REF)));
+        String stateMessage = "ACTION STATE->" + String(GO_TO_REF) + "\n";
+        ccSerial.print(stateMessage);
       }
     }else if (button_up_state == LOW || button_down_state == LOW) {
           inflate_deflate_to_preset = false; //reset

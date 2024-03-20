@@ -7,17 +7,17 @@ const int TX = 9; //orange cord
 SoftwareSerial ccSerial = SoftwareSerial(RX, TX); // RX, TX
 
 //SOLENOID VALVES
-const int VALVE1 = 2;
-const int VALVE2 = 3;
-const int VALVE3 = 4;
-const int VALVE4 = 5;
+const int VALVE1 = 5;
+const int VALVE2 = 4;
+const int VALVE3 = 3;
+const int VALVE4 = 2;
 const int VALVE_OUT = 6;
 const int PUMP = 7;
 
-const int sensorPin1 = A1;
-const int sensorPin2 = A2;
-const int sensorPin3 = A3;
-const int sensorPin4 = A4;
+const int sensorPin1 = A4;
+const int sensorPin2 = A3;
+const int sensorPin3 = A2;
+const int sensorPin4 = A1;
 
 static unsigned long lastRefreshTime = 0;
 const int sampling_interval = 1000;
@@ -31,6 +31,7 @@ const float STD_DEV_MULTIPLIER = 1.5;
 bool pump_on = false;
 bool exhaust_on = false;
 
+//const float INFLATE_CAP = 1.5;
 
 const int MAX_REFILL_TIME = 30000;
 const int MIN_REFILL_TIME = 5000;
@@ -50,7 +51,14 @@ enum ActionState {
   DEFLATE_QUAD = 5,
   GO_TO_REF = 6
 };
-ActionState actionState = DEFLATE_ALL;
+
+enum LeakState {
+  NONE = 0,
+  SMALL = 1,
+  LARGE = 2
+};
+
+ActionState actionState = MAIN_MODE;
 
 struct Queue {
   int front, rear;
@@ -124,12 +132,12 @@ class Quadrant {
   int valve_pin;
   struct LeakLog leak_log;
   public:
-    bool hasSmallLeak;
-    bool hasLargeLeak;
     bool is_refilling;
     bool is_deflating;
     float ideal_pressure;
     float minuteSum;
+    LeakState leakState;
+    LeakState lastLeakState;
     struct Queue* sensorData;
   Quadrant(int n, int sp, int vp, float m, float b, float ip) {
     num = n;
@@ -137,12 +145,12 @@ class Quadrant {
     valve_pin = vp;
     calibration_m = m;
     calibration_b = b;
-    hasSmallLeak = false;
-    hasLargeLeak = false;
     is_refilling = false;
     is_deflating = false;
     ideal_pressure = ip;
     minuteSum = 0;
+    leakState = NONE;
+    lastLeakState = NONE;
     initializeQueue(sensorData, N);
     for(int i = 0; i < 4; i++) {
       leak_log.detectionTimestamps[i] = 0;
@@ -210,7 +218,8 @@ class Quadrant {
     }
   }
 
-  void evaluateLeakSeverity() {
+  bool evaluateLeakSeverity() {
+    bool severityChanged = false;
     unsigned int currentMinutes = millis() / 60000; // Get current time in minutes
     int countLastHour = 0;
     bool hasActuationLast24Hours = false;
@@ -227,15 +236,18 @@ class Quadrant {
     }
 
     if (countLastHour > 2) {
-      hasLargeLeak = true;
-      hasSmallLeak = false;
+      leakState = LARGE;
     } else if(hasActuationLast24Hours) {
-      hasSmallLeak = true;
-      hasLargeLeak = false;
+      leakState = SMALL;
     } else {
-      hasSmallLeak = false;
-      hasLargeLeak = false;
+      leakState = NONE;
     }
+
+    if(leakState != lastLeakState) {
+      lastLeakState = leakState;
+      severityChanged = true;
+    }
+    return severityChanged;
  }
 
    void refillRoutine() {
@@ -281,7 +293,9 @@ Quadrant* q4;
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);  // Initialize serial communication
+  Serial.flush();
   ccSerial.begin(9600);
+  ccSerial.flush();
   pinMode(VALVE1, OUTPUT); 
   pinMode(VALVE2, OUTPUT); 
   pinMode(VALVE3, OUTPUT); 
@@ -293,7 +307,7 @@ void setup() {
   pinMode(sensorPin2, INPUT);
   pinMode(sensorPin3, INPUT);
   pinMode(sensorPin4, INPUT);
-  actionState = SET_NEW_REF;
+  actionState = MAIN_MODE;
 
   q1 = new Quadrant(1, sensorPin1, VALVE1, 0.00792, -0.252, 0.54);
   q2 = new Quadrant(2, sensorPin2, VALVE2, 0.00789, -0.302, 0.59);
@@ -304,7 +318,8 @@ void setup() {
 // FUNCTIONS FOR SET-MODE -----------------------------------------
 
 void deflateAllMode() {
-  Serial.print("Deflating All");
+  Serial.println("Deflating All");
+  exhaust_on = true;
   digitalWrite(VALVE1, HIGH);
   digitalWrite(VALVE2, HIGH);
   digitalWrite(VALVE3, HIGH);
@@ -314,13 +329,19 @@ void deflateAllMode() {
 }
 
 void inflateAllMode() {
-  Serial.print("Inflating All");
+  pump_on = true;
+  Serial.println("Inflating All");
   digitalWrite(VALVE1, HIGH);
   digitalWrite(VALVE2, HIGH);
   digitalWrite(VALVE3, HIGH);
   digitalWrite(VALVE4, HIGH);
   digitalWrite(VALVE_OUT, LOW);
   digitalWrite(PUMP, HIGH);
+  // if(q1->readPSI() > INFLATE_CAP) {
+  //   Serial.println("Sending overinflated message and leaving inflate all mode");
+  //   ccSerial.println("OVERINFLATED");
+  //   actionState = MAIN_MODE;
+  // }
 }
 
 // SET NEW IDEAL PRESSURES:
@@ -404,6 +425,14 @@ bool is_datapoint_an_outlier(struct Queue* queue, float new_data){
   return residual_error > residual_err_thres;
   
 }
+
+// void goToRefMode() {
+//   Serial.println("Go To Reference Mode");
+//   q1->refillRoutine();
+//   q2->refillRoutine();
+//   q3->refillRoutine();
+//   q4->refillRoutine();
+// }
 
 void refillMode() {
    Serial.println("refill Mode");
@@ -532,11 +561,11 @@ void mainMode() {
     enqueue(q3->sensorData, s3_curr);
     enqueue(q4->sensorData, s4_curr);
 
-    Serial.println("\nMINUTE AVERAGES:\n");
-    Serial.println("Average for Q1: " + String(s1_curr) + "\n");
-    Serial.println("Average for Q2: " + String(s2_curr) + "\n");
-    Serial.println("Average for Q3: " + String(s3_curr) + "\n");
-    Serial.println("Average for Q4: " + String(s4_curr) + "\n\n");
+    // Serial.println("\nMINUTE AVERAGES:\n");
+    // Serial.println("Average for Q1: " + String(s1_curr) + "\n");
+    // Serial.println("Average for Q2: " + String(s2_curr) + "\n");
+    // Serial.println("Average for Q3: " + String(s3_curr) + "\n");
+    // Serial.println("Average for Q4: " + String(s4_curr) + "\n\n");
     
     if (user_is_seated(s1_curr, s2_curr, s3_curr, s4_curr)){
       pressureCheck(q1, s1_curr);
@@ -544,13 +573,33 @@ void mainMode() {
       pressureCheck(q3, s3_curr);
       pressureCheck(q4, s4_curr);
     }
-    q1->evaluateLeakSeverity();
-    q2->evaluateLeakSeverity();
-    q3->evaluateLeakSeverity();
-    q4->evaluateLeakSeverity();
+    bool q1_changed = q1->evaluateLeakSeverity();
+    bool q2_changed = q2->evaluateLeakSeverity();
+    bool q3_changed = q3->evaluateLeakSeverity();
+    bool q4_changed = q4->evaluateLeakSeverity();
+
+    if(q1_changed || q2_changed || q3_changed || q4_changed) {
+      sendLeakStatus();
+    }
   } // end if a minute is reached
 }// end main mode
 
+
+void sendLeakStatus() {
+  unsigned char packedByte = 0;
+  packedByte |= (q1->leakState == SMALL ? 1 : 0) << 0;
+  packedByte |= (q1->leakState == LARGE ? 1 : 0) << 1;
+  packedByte |= (q2->leakState == SMALL ? 1 : 0) << 2;
+  packedByte |= (q2->leakState == LARGE ? 1 : 0) << 3;
+  packedByte |= (q3->leakState == SMALL ? 1 : 0) << 4;
+  packedByte |= (q3->leakState == LARGE ? 1 : 0) << 5;
+  packedByte |= (q4->leakState == SMALL ? 1 : 0) << 6;
+  packedByte |= (q4->leakState == LARGE ? 1 : 0) << 7;
+  ccSerial.print("LEAK STATUS->");
+  ccSerial.write(packedByte);
+  Serial.print("Sent Leak Status");
+  Serial.println(packedByte);
+}
 
 // Algorithm helper functions
 bool is_pressure_unacceptable(float current_pressure, float ideal_pressure){
@@ -587,31 +636,49 @@ ActionState getStateFromSerial(String inputString, String substring) {
 }
 
 void loop() {
+  if(sampleCount < 15000) {
 
-  if(sampleCount < 1200) {
     if(millis() - lastRefreshTime >= sampling_interval) {
+      //actionState = MAIN_MODE;
+      
+      // NOT SURE WHY THESE KEEP BEING SET TO TRUE INITIALLY??? WEIRD
+      q2->is_refilling = false;
+      q2->is_deflating = false;
       lastRefreshTime = millis();
       String receivedState = "";
       while(ccSerial.available()) {
-        receivedState += ccSerial.read();
+        char c = ccSerial.read();
+        receivedState += c;
       }
       if(receivedState.indexOf("ACTION STATE->") != -1) {
         actionState = getStateFromSerial(receivedState, "ACTION STATE->");
+        Serial.println(receivedState);
       }
-       if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
-         Serial.println("action state set to inflate");
-         actionState = INFLATE_QUAD;
-        } else if(q1->is_deflating || q2->is_deflating || q3->is_deflating || q4->is_deflating){
-          Serial.println("action state set to deflate");
-          actionState = DEFLATE_QUAD;
-        } 
-        else if (actionState != SET_NEW_REF) {
-          actionState = MAIN_MODE;
-        }
+
+      if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
+        Serial.println(q1->is_refilling);
+        Serial.println(q2->is_refilling);
+        Serial.println(q3->is_refilling);
+        Serial.println(q4->is_refilling);
+        Serial.println("action state set to inflate");
+        actionState = INFLATE_QUAD;
+      } else if(q1->is_deflating || q2->is_deflating || q3->is_deflating || q4->is_deflating){
+        Serial.println(q1->is_deflating);
+        Serial.println(q2->is_deflating);
+        Serial.println(q3->is_deflating);
+        Serial.println(q4->is_deflating);
+        Serial.println("action state set to deflate");
+        actionState = DEFLATE_QUAD;
+      }
+
+      // else if (actionState != SET_NEW_REF) {
+      //   actionState = MAIN_MODE;
+      // }
         
     
        switch (actionState) {
           case INFLATE_ALL:
+            Serial.println("in inflate all mode");
             inflateAllMode(); 
             break;
           case DEFLATE_ALL:
@@ -626,6 +693,9 @@ void loop() {
           case DEFLATE_QUAD:
             deflateMode();
             break;
+          // case GO_TO_REF:
+          //   goToRefMode();
+          //   break;
           case MAIN_MODE: 
             if(pump_on) {
                   digitalWrite(PUMP, LOW);
@@ -659,7 +729,7 @@ void loop() {
         } // end switch action state 
 
       sampleCount++;
-      if(sampleCount == 1200) {
+      if(sampleCount == 15000) {
         Serial.println(String("end\n"));
         delete q1;
         delete q2;
