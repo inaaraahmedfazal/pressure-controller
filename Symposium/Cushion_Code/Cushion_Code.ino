@@ -46,7 +46,7 @@ enum ActionState {
   SET_NEW_REF = 4,
   INFLATE_QUAD = 5, 
   DEFLATE_QUAD = 6,
-  GO_TO_REF = 7,
+  GO_TO_REF = 7
 };
 ActionState actionState = IDLE_STATE;
 ActionState prevActionState = IDLE_STATE;
@@ -120,8 +120,10 @@ class Quadrant {
         }
         openValve();
         digitalWrite(PUMP, HIGH);
+        pump_on = true;
         delay(delayTime);
         digitalWrite(PUMP, LOW);
+        pump_on = false;
         closeValve();
       }
       curTime = millis();
@@ -180,6 +182,10 @@ void unlockQuads(){
   digitalWrite(VALVE2, HIGH);
   digitalWrite(VALVE3, HIGH);
   digitalWrite(VALVE4, HIGH);
+  digitalWrite(VALVE_OUT, LOW);
+  digitalWrite(PUMP, LOW);
+  exhaust_on = false;
+  pump_on = false;
 }
 
 void deflateAllMode() {
@@ -244,18 +250,21 @@ void refillMode() {
 void deflateMode() {
   if(q1->is_deflating) {
     if(q1->readPSI() <= q1->ideal_pressure) {
+      Serial.println("q1 deflating");
       q1->is_deflating = false;
       q1->closeValve();
     }
   }
   if(q2->is_deflating) {
     if(q2->readPSI() <= q2->ideal_pressure) {
+      Serial.println("q2 deflating");
       q2->is_deflating = false;
       q2->closeValve();
     }
   }
   if(q3->is_deflating) {
     if(q3->readPSI() <= q3->ideal_pressure) {
+      Serial.println("q3 deflating");
       q3->is_deflating = false;
       q3->closeValve();
 
@@ -263,6 +272,7 @@ void deflateMode() {
   }
   if(q4->is_deflating) {
     if(q4->readPSI() <= q4->ideal_pressure) {
+      Serial.println("q4 deflating");
       q4->is_deflating = false;
       q4->closeValve();
     }
@@ -345,15 +355,22 @@ ActionState getStateFromSerial(String inputString, String substring) {
 }
 
 void loop() {
-      
       lastRefreshTime = millis();
       String receivedState = "";
       while(ccSerial.available()) {
-        receivedState += ccSerial.read();
+        char c = ccSerial.read();
+        receivedState += c;
         Serial.println(receivedState);
       }
-      if(receivedState.indexOf("ACTION STATE->") != -1) {
-        actionState = getStateFromSerial(receivedState, "ACTION STATE->");
+      if(receivedState.indexOf("STATE->") != -1) {
+        actionState = getStateFromSerial(receivedState, "STATE->");
+        Serial.println(receivedState);
+        Serial.println("equal?" + (prevActionState == actionState));
+      }
+    // Check if the incoming message is "ping"
+      if (receivedState.indexOf("ping") != -1) {
+        Serial.println("ping received");
+        ccSerial.println("pong"); // Send a "pong" reply if "ping" is received
       }
 
      if(q1->is_refilling || q2->is_refilling || q3->is_refilling || q4->is_refilling){
@@ -370,6 +387,7 @@ void loop() {
        // only change behaviour if new actionState OR inflate or deflate quad modes which are activated by the "go_to_ref" and loop 
        // until all quadrants are acceptable
        if (actionState == INFLATE_QUAD || actionState == DEFLATE_QUAD || actionState != prevActionState) {
+          Serial.println("in switch");
           switch (actionState) {
           case SET_NEW_REF:
             recordAndSetIdealPressures();
@@ -420,7 +438,7 @@ void loop() {
               }
               break;
         } // end switch action state 
+        
        }
-        prevActionState = actionState;
-
+  prevActionState = actionState;
 }// end loop 

@@ -17,7 +17,7 @@ Toggle[] buttons = new Toggle[buttonLabels.length];
 void setup() {
    
   size(400, 700);
-  port = new Serial(this, "COM6", 9600);
+  port = new Serial(this, "COM4", 9600);
   cp5 = new ControlP5(this);
 
   // Create the buttons

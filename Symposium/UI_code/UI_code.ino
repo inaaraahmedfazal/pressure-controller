@@ -2,7 +2,7 @@
 //#include <bluefruit.h>
 #include <SoftwareSerial.h>
 //Adafruit_BluefruitLE_SPI ble(SPI_CS, SPI_IRQ, SPI_RST);
-#define TIMEOUT 1000
+#define TIMEOUT 2000
 const int RX = 15;
 const int TX = 16;
 
@@ -58,7 +58,7 @@ byte button_down_last_state = LOW;
 // Slide Switch Pinout
 const int switch_mode = 21;
 int switch_mode_state = LOW;
-byte switch_mode_last_state = LOW;
+byte switch_mode_last_state = HIGH;
 
 // BUZZER PIN DEFINITIONS -----------------------------------------------
 
@@ -328,7 +328,10 @@ void loop() {
 
    //CHECK IF THEY HAVE JUST FLIPPED SWITCH -- UNLOCK QUADRANTS
     if (switch_mode_last_state == HIGH) {
+      switch_mode_last_state = LOW;
       String stateMessage = "ACTION STATE->" + String(UNLOCK_QUAD) + "\n";
+      ccSerial.print(stateMessage);
+      Serial.println("State message" + stateMessage);
    }
    
   //CHECK FOR SETTING NEW REFERENCE ---------------------------------------
@@ -397,7 +400,9 @@ void loop() {
     
    //CHECK IF THEY HAVE JUST FLIPPED SWITCH TO OFF -- LOCK QUADRANTS
     if (switch_mode_last_state == LOW) {
+      switch_mode_last_state = HIGH;
       String stateMessage = "ACTION STATE->" + String(IDLE_STATE) + "\n";
+      ccSerial.print(stateMessage);
     }
 
   // CHECK FOR BOTH INFLATE DEFLATE PRESSED ----------------------------------------------------
