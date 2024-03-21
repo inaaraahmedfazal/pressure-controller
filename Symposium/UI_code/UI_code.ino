@@ -171,6 +171,8 @@ void setLightOff(int redPin, int greenPin){
 }
 
 void turnAllOff(){
+  analogWrite(red_power,0); // take out if causing problems
+  analogWrite(green_power,0); // take out if causing problems 
   analogWrite(red_q1, 0);
   analogWrite(red_q2, 0);
   analogWrite(red_q3, 0);
@@ -298,13 +300,12 @@ void loop() {
   }
    
    if (q1_large || q2_large || q3_large || q3_large ) {
-  soundAlarm = true;
+    soundAlarm = true;
   // if there is a new large leak reset the mute to be false, triggering a new alarm
   if ((q1_large && !q1_large_prev) || (q2_large && !q2_large_prev) || (q3_large && !q3_large_prev) || (q4_large && !q4_large_prev)) {
     mutePressed = false;
-  }
-   } else {
-  soundAlarm = false;
+  }} else {
+    soundAlarm = false;
    }
    q1_large_prev = q1_large;
    q2_large_prev = q2_large;
