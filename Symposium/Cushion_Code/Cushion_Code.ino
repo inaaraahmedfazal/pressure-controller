@@ -314,6 +314,8 @@ void pressureCheck(class Quadrant* q, float curr_pressure) {
         q->is_deflating = true;
         q->openValve();
       }
+   } else {
+    Serial.println("pressure is within acceptable range");
    }
 
 } // end checkQuad

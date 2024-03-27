@@ -1,8 +1,8 @@
 // declaring output pins
-int valve_1 = 2;
-int valve_2 = 3;
-int valve_3 = 4;
-int valve_4 = 5;
+int valve_1 = 5;
+int valve_2 = 4;
+int valve_3 = 3;
+int valve_4 = 2;
 int exhaust = 6;
 int pump    = 7;
 
@@ -44,7 +44,7 @@ void loop() {
     previousMillis = currentMillis; // Update the last print time
    
     for (int i = 0; i < 4; i++) {
-      float sensorValue = analogRead(A1 + i);
+      float sensorValue = analogRead(A4 - i);
   
       if (i == 0) {
         sensorValue = 0.00792*sensorValue + -0.252;
